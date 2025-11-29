@@ -1,0 +1,10 @@
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
+
+transform = transforms.Compose([
+    transforms.Resize((64, 64)),
+    transforms.ToTensor(),  # [C, H, W]
+])
+
+train_dataset = MicroExpressionDataset('dataset_root', seq_len=16, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=2)

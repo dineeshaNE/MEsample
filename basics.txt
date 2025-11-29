@@ -1,0 +1,3 @@
+  Input (sequence) ─▶ InProj ─▶ SSM Kernel Generator ─▶ Conv1D (causal) ─▶ Gate & Nonlinearity ─▶ OutProj ─▶ Output
+                               ▲            │
+                             Params: A, B, C, D

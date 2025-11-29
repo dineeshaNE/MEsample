@@ -1,0 +1,198 @@
+import argparse
+import os
+import torch
+from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
+from torch import nn, optim
+from tqdm import tqdm
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image
+
+from mamba_ssm import Mamba  # Ensure this is installed: pip install mamba-ssm
+
+
+# --- Dataset ---
+class MicroExpressionDataset(torch.utils.data.Dataset):
+    def __init__(self, root_dir, seq_len=16, transform=None):
+        self.root_dir = root_dir
+        self.seq_len = seq_len
+        self.transform = transform
+        self.samples = []
+        self.label_map = {cls: i for i, cls in enumerate(sorted(os.listdir(root_dir)))}
+
+        for cls in os.listdir(root_dir):
+            class_path = os.path.join(root_dir, cls)
+            for clip in os.listdir(class_path):
+                clip_path = os.path.join(class_path, clip)
+                self.samples.append((clip_path, self.label_map[cls]))
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        clip_path, label = self.samples[idx]
+        frames = sorted([os.path.join(clip_path, f) for f in os.listdir(clip_path)
+                         if f.endswith(('.jpg', '.png'))])
+        total = len(frames)
+        if total >= self.seq_len:
+            indices = torch.linspace(0, total - 1, steps=self.seq_len).long()
+        else:
+            indices = torch.cat([torch.arange(total), torch.full((self.seq_len - total,), total - 1)])
+
+        imgs = []
+        for i in indices:
+            img = Image.open(frames[i]).convert("L")
+            if self.transform:
+                img = self.transform(img)
+            imgs.append(img)
+
+        video = torch.stack(imgs)  # [T, C, H, W]
+        return video, label
+
+
+# --- Model ---
+class FrameFeatureExtractor(nn.Module):
+    def __init__(self, in_channels=1, feature_dim=128):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, feature_dim, 3, padding=1),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+
+    def forward(self, x):
+        x = self.cnn(x)
+        return x.view(x.size(0), -1)
+
+
+class MambaMER(nn.Module):
+    def __init__(self, in_channels=1, feature_dim=128, mamba_dim=128, num_classes=5, seq_len=16):
+        super().__init__()
+        self.extractor = FrameFeatureExtractor(in_channels, feature_dim)
+        self.proj = nn.Linear(feature_dim, mamba_dim)
+        self.mamba = Mamba(d_model=mamba_dim)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(mamba_dim),
+            nn.Linear(mamba_dim, num_classes)
+        )
+
+    def forward(self, x):  # x: [B, T, C, H, W]
+        B, T, C, H, W = x.shape
+        x = x.view(B * T, C, H, W)
+        features = self.extractor(x)
+        features = features.view(B, T, -1)
+        features = self.proj(features)
+        out = self.mamba(features)
+        pooled = out.mean(dim=1)
+        return self.classifier(pooled)
+
+
+# --- Evaluation ---
+def evaluate(model, dataloader, class_names, device):
+    model.eval()
+    preds, trues = [], []
+
+    with torch.no_grad():
+        for videos, labels in dataloader:
+            videos, labels = videos.to(device), labels.to(device)
+            videos = videos.permute(0, 1, 2, 3, 4)
+            out = model(videos)
+            p = out.argmax(dim=1)
+            preds.extend(p.cpu().numpy())
+            trues.extend(labels.cpu().numpy())
+
+    print(classification_report(trues, preds, target_names=class_names))
+    cm = confusion_matrix(trues, preds)
+    sns.heatmap(cm, annot=True, fmt='d', xticklabels=class_names, yticklabels=class_names, cmap='Blues')
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+    plt.show()
+
+
+# --- Main Training ---
+def main(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    transform = transforms.Compose([
+        transforms.Resize((64, 64)),
+        transforms.ToTensor()
+    ])
+
+    dataset = MicroExpressionDataset(args.dataset, args.seq_len, transform)
+    num_classes = len(dataset.label_map)
+    class_names = list(dataset.label_map.keys())
+
+    val_size = int(args.val_ratio * len(dataset))
+    train_size = len(dataset) - val_size
+    train_set, val_set = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=args.batch_size)
+
+    model = MambaMER(in_channels=1, num_classes=num_classes, seq_len=args.seq_len).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    criterion = nn.CrossEntropyLoss()
+
+    best_acc = 0
+
+    for epoch in range(args.epochs):
+        model.train()
+        total_loss, correct, total = 0, 0, 0
+
+        for videos, labels in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}"):
+            videos, labels = videos.to(device), labels.to(device)
+            videos = videos.permute(0, 1, 2, 3, 4)
+            out = model(videos)
+            loss = criterion(out, labels)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            correct += (out.argmax(dim=1) == labels).sum().item()
+            total += labels.size(0)
+
+        acc = 100 * correct / total
+        print(f"Epoch {epoch + 1} - Train Loss: {total_loss:.4f}, Accuracy: {acc:.2f}%")
+
+        # Validation
+        model.eval()
+        val_correct, val_total = 0, 0
+        with torch.no_grad():
+            for videos, labels in val_loader:
+                videos, labels = videos.to(device), labels.to(device)
+                videos = videos.permute(0, 1, 2, 3, 4)
+                outputs = model(videos)
+                val_correct += (outputs.argmax(dim=1) == labels).sum().item()
+                val_total += labels.size(0)
+        val_acc = 100 * val_correct / val_total
+        print(f"Validation Accuracy: {val_acc:.2f}%")
+
+        if val_acc > best_acc:
+            best_acc = val_acc
+            torch.save(model.state_dict(), args.save_path)
+            print("✅ Best model saved!")
+
+    evaluate(model, val_loader, class_names, device)
+
+
+# --- CLI ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train Mamba for Micro-Expression Recognition")
+    parser.add_argument("--dataset", type=str, required=True, help="Path to dataset root")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--seq_len", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--val_ratio", type=float, default=0.2)
+    parser.add_argument("--save_path", type=str, default="best_mamba_mer.pth")
+    args = parser.parse_args()
+    main(args)
