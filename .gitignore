@@ -1,0 +1,61 @@
+venv/
+venv*/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+env/
+ENV/
+build/
+dist/
+egg-info/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+*.egg
+
+# Editor and IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and runtime
+*.log
+.pytest_cache/
+.mypy_cache/
+coverage/
+htmlcov/
+
+# Data, outputs and models
+data/
+dataset/
+datasets/
+outputs/
+models/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# C extensions
+*.so
+
+# Temporary
+*.bak
+*.tmp
+# Python virtual environment
+venv310/
+
+# Python cache
+__pycache__/
+*.pyc

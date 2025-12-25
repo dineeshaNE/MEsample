@@ -1,7 +1,20 @@
+import torch, torch.nn as nn
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
 import os
+
+
+class ToySequenceDataset(Dataset):
+    def __init__(self, num_samples=1000, seq_len=10, d_model=64):
+        self.x = torch.randn(num_samples, seq_len, d_model)
+        self.y = torch.randint(0, 2, (num_samples,))
+
+    def __len__(self):
+        return len(self.x)
+
+    def __getitem__(self, idx):
+        return self.x[idx], self.y[idx]
 
 class MicroExpressionDataset(Dataset):
     def __init__(self, root_dir, seq_len=16, transform=None):

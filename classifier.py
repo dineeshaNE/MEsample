@@ -1,0 +1,38 @@
+import torch
+import torch.nn as nn
+# from mamba_ssm import Mamba
+from mamba import SimpleMamba
+
+class MambaClassifier(nn.Module):
+    def __init__(self, d_model=64, num_classes=2):
+        super().__init__()
+        
+        self.backbone = SimpleMamba(d_model)
+        # for real mamba;  self.backbone = Mamba(d_model, ...)
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, x):
+        h = self.backbone(x)       # (B, T, D)
+        h_last = h[:, -1, :]       # summary of sequence
+        return self.classifier(h_last)
+    
+""" mamba_ssm
+class MambaClassifier(nn.Module):
+    def __init__(self, d_model=64, num_classes=2):
+        super().__init__()
+        
+        self.mamba = Mamba(
+            d_model=d_model,
+            d_state=16,
+            d_conv=4,
+            expand=2
+        )
+        
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, x):
+        # x: (B, T, D)
+        h = self.mamba(x)           # (B, T, D)
+        h_last = h[:, -1, :]        # last timestep
+        return self.classifier(h_last)
+        """
