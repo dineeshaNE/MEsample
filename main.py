@@ -12,8 +12,6 @@ def main():
     loader = DataLoader(dataset, batch_size=8, shuffle=True)
     #print(f"DataLoader created with batch size 8")
 
-    ''' model = SimpleSSM(64)
-    classifier = nn.Linear(64, 2)'''
 
     #print("Initializing model...MambaClassifier")
     model = MambaClassifier(64,2)
@@ -37,49 +35,24 @@ def main():
     {"params": model.backbone.parameters(), "lr": 1e-4},
     {"params": model.classifier.parameters(), "lr": 1e-3},"""
            
-    
     #print(f"Optimizer: {optimizer}")
             
 
-# training step
-    for x, y in loader:#
-        print   (f"Input batch shape: {x.shape}")
-
-        #out = model(x)              # x (B, T, D)
-        logits = model(x)
-        print(f"Model output shape: {logits.shape} {logits}")
-            
-        #out = out[:, -1, :]         # last timeste
-        #logits already done with model
-        ##logits = model.classifier(out)
-        #logits = model prediction scores
-
-        # correct the class
-
-        loss = criterion(logits, y)
-        #loss = error between logits and correct class
-        loss.backward()
-        #parameter.grad = ∂loss / ∂parameter
-        optimizer.step()
-        # parameter = parameter - learning_rate * gradient (with Adam magic)
-        optimizer.zero_grad()
-        # SimpleSSM → hidden states → last timestep → classifier → logits
-
-    print("Training step OK")
-
-    """ training loop
+     #training loop
     for epoch in range(10):
-    for x, y in loader:
-        logits = model(x)
-        loss = criterion(logits, y)
+        for x, y in loader:
+            logits = model(x)
+            loss = criterion(logits, y)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
     print(f"Epoch {epoch} | Loss: {loss.item():.4f}")
     
-      print("Training step OK")"""
+    print("Training step OK")
+    
+    
 
 if __name__ == "__main__":
     import traceback
@@ -89,8 +62,3 @@ if __name__ == "__main__":
         print("Exception in main:", repr(e))
         traceback.print_exc()
         raise
-"""if __name__ == "__main__":
-    print("mamba.py loaded")
-    m = Mamba(64)
-    x = torch.randn(2, 10, 64)
-    print(m(x).shape)"""

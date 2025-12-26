@@ -48,7 +48,7 @@ complexity O(TD)
             outputs.append(yt)
             #print(f"SSM timestep {t}, output shape: {yt.shape}",outputs.__len__)
             
-        print(f"SSM final output shape: {outputs[0].shape} yt {yt.shape}")
+        #print(f"SSM final output shape: {outputs[0].shape} yt {yt.shape}")
         return torch.stack(outputs, dim=1)
 
 """# quick/sanity test

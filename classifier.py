@@ -15,16 +15,17 @@ class MambaClassifier(nn.Module):
 
         #decision head
         self.classifier = nn.Linear(d_model,num_classes)
-        print("Initialized MambaClassifier",d_model,num_classes,self.backbone,self.classifier)
+        #print("Initialized MambaClassifier",d_model,num_classes,self.backbone,self.classifier)
 
     def forward(self, x):
         h = self.backbone(x)       # (B, T, D)
-        print("Raw backbone output:", h.shape)
+        h_last = h[:, -1, :]       # B D
+        logits = self.classifier(h_last)  # (B, num_classes)
 
-
-        h_last = h[:, -1, :]       # summary of sequence
-        print(f"Classifier input : {h_last}")
-        return self.classifier(h_last)
+        print("Backbone:", h.shape)
+        print("Last:", h_last.shape)
+        print("Logits:", logits.shape)
+        return logits
     
 """ mamba_ssm
 class MambaClassifier(nn.Module):
