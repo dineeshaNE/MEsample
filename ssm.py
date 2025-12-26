@@ -25,6 +25,8 @@ complexity O(TD)
         self.B = nn.Parameter(torch.randn(d_model))
         self.C = nn.Parameter(torch.randn(d_model))
         self.D = nn.Parameter(torch.randn(d_model))
+        #print("Initialized SimpleSSM",d_model)
+        
 
     def forward(self, x):
         """
@@ -44,7 +46,9 @@ complexity O(TD)
             # OUTPUT
             yt = self.C * s + self.D * xt
             outputs.append(yt)
-
+            #print(f"SSM timestep {t}, output shape: {yt.shape}",outputs.__len__)
+            
+        print(f"SSM final output shape: {outputs[0].shape} yt {yt.shape}")
         return torch.stack(outputs, dim=1)
 
 """# quick/sanity test

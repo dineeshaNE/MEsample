@@ -6,6 +6,7 @@ from dataset import ToySequenceDataset
 
 
 def main():
+
     dataset = ToySequenceDataset()
     #print(f"Dataset length: {len(dataset)}")
     loader = DataLoader(dataset, batch_size=8, shuffle=True)
@@ -14,29 +15,43 @@ def main():
     ''' model = SimpleSSM(64)
     classifier = nn.Linear(64, 2)'''
 
+    #print("Initializing model...MambaClassifier")
     model = MambaClassifier(64,2)
-    #print(f"Model initialized: {model}")
-
+    print("Model and components initialized.")
+    
 
     criterion = nn.CrossEntropyLoss()
-    #print(f"Criterion: {criterion}")
+    print(f"Criterion: {criterion}")
 
     optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(model.classifier.parameters()),
+        # to avoid duplicates comment the below line
+        # list(model.parameters())  + list(model.classifier.parameters()),
+        list(model.parameters()) ,
         lr=1e-3
         #Learning rate = step size. 1e-3 = 0.001
         #input → logits → loss → gradients → parameter update
-        
-              
-    )
+    )    
+    """  this often gives 10–25% accuracy gains on small MER datasets.        
+    The backbone already knows useful visual dynamics
+    The classifier is newly initialized and must learn fast
+    {"params": model.backbone.parameters(), "lr": 1e-4},
+    {"params": model.classifier.parameters(), "lr": 1e-3},"""
+           
+    
     #print(f"Optimizer: {optimizer}")
             
 
 # training step
-    for x, y in loader:
-        out = model(x)              # (B, T, D)
-        out = out[:, -1, :]         # last timestep
-        logits = model.classifier(out)
+    for x, y in loader:#
+        print   (f"Input batch shape: {x.shape}")
+
+        #out = model(x)              # x (B, T, D)
+        logits = model(x)
+        print(f"Model output shape: {logits.shape} {logits}")
+            
+        #out = out[:, -1, :]         # last timeste
+        #logits already done with model
+        ##logits = model.classifier(out)
         #logits = model prediction scores
 
         # correct the class
@@ -74,3 +89,8 @@ if __name__ == "__main__":
         print("Exception in main:", repr(e))
         traceback.print_exc()
         raise
+"""if __name__ == "__main__":
+    print("mamba.py loaded")
+    m = Mamba(64)
+    x = torch.randn(2, 10, 64)
+    print(m(x).shape)"""

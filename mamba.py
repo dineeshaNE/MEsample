@@ -9,6 +9,8 @@ class SimpleMamba(nn.Module):
         super().__init__()
 
         self.ssm = SimpleSSM(d_model)
+        print("Initialized SimpleMamba SSM",d_model,self.ssm)
+
 
         self.gate = nn.Sequential(
             nn.Linear(d_model, d_model),

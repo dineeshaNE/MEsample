@@ -7,13 +7,23 @@ class MambaClassifier(nn.Module):
     def __init__(self, d_model=64, num_classes=2):
         super().__init__()
         
+        #Video → Backbone → Features → Classifier → Prediction
+        #feature extractor
         self.backbone = SimpleMamba(d_model)
-        # for real mamba;  self.backbone = Mamba(d_model, ...)
-        self.classifier = nn.Linear(d_model, num_classes)
+        ''' for real mamba;  
+        self.backbone = Mamba(d_model, ...)'''
+
+        #decision head
+        self.classifier = nn.Linear(d_model,num_classes)
+        print("Initialized MambaClassifier",d_model,num_classes,self.backbone,self.classifier)
 
     def forward(self, x):
         h = self.backbone(x)       # (B, T, D)
+        print("Raw backbone output:", h.shape)
+
+
         h_last = h[:, -1, :]       # summary of sequence
+        print(f"Classifier input : {h_last}")
         return self.classifier(h_last)
     
 """ mamba_ssm
