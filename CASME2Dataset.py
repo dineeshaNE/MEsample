@@ -23,8 +23,8 @@ class CASME2Dataset(Dataset):
 
         if annotation_file.endswith(".csv"):
             self.ann = pd.read_csv(annotation_file)
-        elif annotation_file.endswith(".xlsx"):
-            self.ann = pd.read_excel(annotation_file)
+        #elif annotation_file.endswith(".xlsx"):
+            #self.ann = pd.read_excel(annotation_file)
         else:
             raise ValueError("Annotation file must be .csv or .xlsx")
         
@@ -35,9 +35,13 @@ class CASME2Dataset(Dataset):
             'disgust': 1,
             'surprise': 2,
             'repression': 3,
-            'others': 4
+            'fear': 4,
+            'sadness': 5,
+            'others': 6
         }
 
+    def _format_subject(self, subject):
+        return f"sub{int(subject):02d}"
 
     def __len__(self):
         return len(self.ann)
@@ -49,14 +53,15 @@ class CASME2Dataset(Dataset):
         video = row['Filename']
 
         #label = int(row['Label'])
-        emotion = row['Emotion'].strip().lower()
+        emotion = row['Estimated Emotion'].strip().lower()
         label = self.label_map[emotion]
         if emotion not in self.label_map:
             raise ValueError(f"Unknown emotion: {emotion}")
 
 
-
-        clip_dir = os.path.join(self.root, subject, video)
+        #subject = self._format_subject(subject)
+        clip_dir = os.path.join(self.root, f"sub{int(subject):02d}", video)
+        print(f"Loading clip from: {clip_dir}")
         frames = sorted(os.listdir(clip_dir))
 
         images = []
@@ -67,7 +72,8 @@ class CASME2Dataset(Dataset):
                 img = self.transform(img) #(3, 224, 224)
             images.append(img)
 
-        x = torch.stack(images)   # (T, C, H, W)
+        x = torch.stack(images)   # (T, C, H,  W)
+        print(f"Frames done: {clip_dir}")
 
         # Temporal normalization
         if x.shape[0] > self.T:
