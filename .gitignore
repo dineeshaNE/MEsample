@@ -39,6 +39,8 @@ dataset/
 datasets/
 outputs/
 models/
+CASME2/
+CASME2/raw/**/*.jpg
 
 # Notebook checkpoints
 .ipynb_checkpoints/

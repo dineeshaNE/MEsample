@@ -3,8 +3,9 @@ from torch.utils.data import DataLoader
 from CASME2Dataset import CASME2Dataset
 from MERModel import MERModel
 from classifier import MambaClassifier
-from dataset import ToySequenceDataset
+#from dataset import ToySequenceDataset
 from transforms import mytransforms
+import pandas as pd
 
 """
 CASME II video clip
@@ -50,10 +51,11 @@ Video → (B,T,C,H,W)
 
 def main():
 
+
     #dataset = ToySequenceDataset()
     dataset = CASME2Dataset(
     root="CASME2/raw",
-    annotation_file="CASME2/annotations.xlsx",
+    annotation_file="CASME2/annotations.csv",
     transform=mytransforms,
     T=30
 )
@@ -63,7 +65,7 @@ def main():
 
 
     #print("Initializing model...MambaClassifier")
-    model = MambaClassifier(64,2)
+    #model = MambaClassifier(64,2) with toy version
     model = MERModel(64, 5)
     print("Model and components initialized.")
     
