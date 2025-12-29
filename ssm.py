@@ -19,6 +19,8 @@ complexity O(TD)
 
     def __init__(self, d_model):
         super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+
 
         # Diagonal SSM parameters
         self.A = nn.Parameter(torch.randn(d_model))
@@ -49,7 +51,11 @@ complexity O(TD)
             #print(f"SSM timestep {t}, output shape: {yt.shape}",outputs.__len__)
             
         #print(f"SSM final output shape: {outputs[0].shape} yt {yt.shape}")
-        return torch.stack(outputs, dim=1)
+        #return torch.stack(outputs, dim=1)
+        y = torch.stack(outputs, dim=1)
+        return self.norm(y)
+
+    
 
 """# quick/sanity test
 if __name__ == "__main__":

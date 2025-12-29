@@ -57,43 +57,32 @@ def main():
     root="CASME2/raw",
     annotation_file="CASME2/annotations.csv",
     transform=mytransforms,
-    T=30
+    T=30,
+    limit = 20
 )
     #print(f"Dataset length: {len(dataset)}")
-    loader = DataLoader(dataset, batch_size=8, shuffle=True)
-    #print(f"DataLoader created with batch size 8")
+    loader = DataLoader(dataset, batch_size=4, shuffle=True)
+    #print(f"DataLoader created with batch size 4")
 
 
     #print("Initializing model...MambaClassifier")
     #model = MambaClassifier(64,2) with toy version
-    model = MERModel(64, 5)
+    model = MERModel(64, 7) # emotion classes
     print("Model and components initialized.")
     
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4) # with CASME2
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5) # with CASME2
 
-    """ with toy
-    optimizer = torch.optim.Adam(
-        # to avoid duplicates comment the below line
-        # list(model.parameters())  + list(model.classifier.parameters()),
-        list(model.parameters()) ,
-        lr=1e-3
-        #Learning rate = step size. 1e-3 = 0.001
-        #input → logits → loss → gradients → parameter update
-    )   
-    """ 
     """  this often gives 10–25% accuracy gains on small MER datasets.        
     The backbone already knows useful visual dynamics
     The classifier is newly initialized and must learn fast
     {"params": model.backbone.parameters(), "lr": 1e-4},
     {"params": model.classifier.parameters(), "lr": 1e-3},"""
            
-    #print(f"Optimizer: {optimizer}")
-            
 
      #training loop
-    for epoch in range(10):
+    for epoch in range(2):
         for x, y in loader:
             logits = model(x)
             loss = criterion(logits, y)
@@ -101,9 +90,12 @@ def main():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-    print(f"Epoch {epoch} | Loss: {loss.item():.4f}")
+            
+        print(f"Epoch {epoch} | Loss: {loss.item():.4f}")
     
+    print("x min/max:", x.min().item(), x.max().item())
+    print("logits min/max:", logits.min().item(), logits.max().item())
+
     print("Training step OK")
     
     

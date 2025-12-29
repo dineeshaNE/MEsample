@@ -15,7 +15,7 @@ CASME2/
  
  
 class CASME2Dataset(Dataset):
-    def __init__(self, root, annotation_file, transform=None, T=30):
+    def __init__(self, root, annotation_file, transform=None, T=30, limit=None):
         self.root = root
         #self.ann = pd.read_excel(annotation_file)
         self.transform = transform
@@ -29,6 +29,9 @@ class CASME2Dataset(Dataset):
             raise ValueError("Annotation file must be .csv or .xlsx")
         
         print(self.ann.columns)
+
+        if limit is not None:
+            self.ann = self.ann.iloc[:limit].reset_index(drop=True)
 
         self.label_map = {
             'happiness': 0,
@@ -48,6 +51,8 @@ class CASME2Dataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.ann.iloc[idx]
+        print  (f"Processing row {idx}") 
+        #print(f"Processing row {idx}: {row.to_dict()}") 
 
         subject = row['Subject']
         video = row['Filename']
@@ -61,7 +66,6 @@ class CASME2Dataset(Dataset):
 
         #subject = self._format_subject(subject)
         clip_dir = os.path.join(self.root, f"sub{int(subject):02d}", video)
-        print(f"Loading clip from: {clip_dir}")
         frames = sorted(os.listdir(clip_dir))
 
         images = []

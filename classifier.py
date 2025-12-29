@@ -4,7 +4,7 @@ import torch.nn as nn
 from mamba import SimpleMamba
 
 class MambaClassifier(nn.Module):
-    def __init__(self, d_model=64, num_classes=2):
+    def __init__(self, d_model=64, num_classes=7):
         super().__init__()
         
         #Video → Backbone → Features → Classifier → Prediction
@@ -22,14 +22,12 @@ class MambaClassifier(nn.Module):
         h_last = h[:, -1, :]       # B D
         logits = self.classifier(h_last)  # (B, num_classes)
 
-        print("Backbone:", h.shape)
-        print("Last:", h_last.shape)
-        print("Logits:", logits.shape)
+        print(f"MambaClassifier done, Backbone:{h.shape} Last: {h_last.shape} Logits: {logits.shape}")
         return logits
     
 """ mamba_ssm
 class MambaClassifier(nn.Module):
-    def __init__(self, d_model=64, num_classes=2):
+    def __init__(self, d_model=64, num_classes=7):
         super().__init__()
         
         self.mamba = Mamba(
