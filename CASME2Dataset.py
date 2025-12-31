@@ -79,11 +79,34 @@ class CASME2Dataset(Dataset):
         x = torch.stack(images)   # (T, C, H,  W)
         print(f"Frames done: {clip_dir}")
 
-        # Temporal normalization
-        if x.shape[0] > self.T:
-            x = x[:self.T]
+        # Compute simple motion magnitude  for strong, learnable temporal signature
+        diffs = (x[1:] - x[:-1]).abs().mean(dim=(1,2,3)) #peaks near the apex
+        scores = torch.cat([diffs[:1], diffs])  # align length
+
+        # Normalize
+        scores = scores / (scores.sum() + 1e-6) # avoid div by zero in no motion clips
+
+
+        # Weighted temporal sampling
+        indices = torch.multinomial(scores, self.T, replacement=True)
+        indices = torch.sort(indices).values
+        x = x[indices]
+        
+
+        # Temporal normalization for robust batch processing
+        """if x.shape[0] > self.T:
+            #x = x[:self.T]
+            num_frames = x.shape[0]
+            start = torch.randint(0, num_frames - self.T + 1, (1,)).item() # random temporal crop
+            x = x[start : start + self.T]
+
         elif x.shape[0] < self.T:
             pad = self.T - x.shape[0]
+            x = torch.cat([x, x[-1:].repeat(pad,1,1,1)]) """
+
+        if x.shape[0] < self.T:
+            pad = self.T - x.shape[0]
             x = torch.cat([x, x[-1:].repeat(pad,1,1,1)])
+
 
         return x, label

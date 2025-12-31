@@ -48,6 +48,25 @@ Video → (B,T,C,H,W)
 → Linear → (B,Classes)
 → Loss
 """
+##############################################################################
+"""
+main
+ └── CASME2Dataset.__init__
+ └── DataLoader.__init__
+ └── MERModel.__init__
+ └── CrossEntropyLoss.__init__
+ └── Adam.__init__
+ └── for epoch
+       └── DataLoader.__iter__ → __next__ → CASME2Dataset.__getitem__
+       └── MERModel.forward → MambaClassifier.forward → SimpleMamba.forward → return logits
+       └── CrossEntropyLoss.forward → loss
+       └── optimizer.zero_grad
+       └── loss.backward
+       └── Adam.step
+ └── print(stats)
+
+ """
+################################################################################
 
 def main():
 
