@@ -147,6 +147,7 @@ def main():
             best_val_acc = val_acc
             best_epoch= epoch
             torch.save(model.state_dict(), "best_model.pth")
+
             '''torch.save({                  'epoch': best_epoch,
                   'model_state': model.state_dict(),
                   'optimizer_state': optimizer.state_dict(),
@@ -166,7 +167,7 @@ def main():
     optimizer.load_state_dict(checkpoint['optimizer_state'])
     print(f" Best model restored from epoch {checkpoint['epoch']} with acc = {checkpoint['best_acc']:.2f}%")
     '''      
-    model.load_state_dict(torch.load("best_model.pth"))
+    model.load_state_dict(torch.load("best_model.pth", weights_only=True))
     model.eval()
 
     test_correct, test_total = 0, 0

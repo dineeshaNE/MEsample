@@ -13,14 +13,15 @@ MambaClassifier → Class scores (B, num_classes)
 ##########################################################################
 
 import torch.nn as nn
-from FrameEncoder import FrameEncoder
+from PatchFrameEncoder import FrameEncoder, PatchFrameEncoder
 #from classifier import MambaClassifier
 from MambaClassifier import MambaClassifier
 
 class MERModel(nn.Module):
     def __init__(self, d_model=64, num_classes=7, dropout=0.2):
         super().__init__()
-        self.encoder = FrameEncoder(d_model)
+        #self.encoder = FrameEncoder(d_model)
+        self.encoder = PatchFrameEncoder(d_model)
         self.mamba = MambaClassifier(d_model, num_classes)
         self.dropout = nn.Dropout(dropout)  # optional dropout for regularization
         #print("Initialized MERModel",d_model,num_classes,self.encoder,self.mamba)

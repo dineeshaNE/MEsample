@@ -78,28 +78,18 @@ class MambaClassifier(nn.Module):
         print("Initialized MambaClassifier",d_model,num_classes)
 
     def forward(self, x):
+        # x: (B, T, N, D)
+        B, T, N, D = x.shape
+
+        # Treat each patch as its own temporal sequence
+        x = x.permute(0, 2, 1, 3).reshape(B*N, T, D)      
+          
         residual = x
 
         x = self.norm(x)
         x = self.in_proj(x)
 
         x1, x2 = x.chunk(2, dim=-1)   # split
-
-        '''# Path A: Conv → SSM
-        x1 = self.conv1d(x1.transpose(1,2)).transpose(1,2)
-        # Path B: Activation
-        x2 = self.activation(x2)
-
-        # Gating path A
-        x1_modulated = x1 * torch.sigmoid(x2)
-        x1 = self.backbone(x1)
-        # Gating
-        x = x1 * x2
-
-        # Output projection + residual
-        x = self.out_proj(x)
-        return x + residual
-        '''
 
         # Path A: Conv → SSM
         x1 = self.conv1d(x1.transpose(1,2)).transpose(1,2)
@@ -116,7 +106,11 @@ class MambaClassifier(nn.Module):
         x = x + residual          # [B, T, 64]
 
         # TEMPORAL POOLING
-        x = x.mean(dim=1)         # [B, 64]
+        x = x.mean(dim=1)         # [B*N, 64]
+
+
+        # Restore patches and pool spatially
+        x = x.view(B, N, D).mean(dim=1)   # (B, D)        
 
         #  CLASSIFICATION HEAD
         logits = self.classifier(x)   # [B, num_classes]
