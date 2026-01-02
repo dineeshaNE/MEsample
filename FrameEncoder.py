@@ -15,7 +15,7 @@ class FrameEncoder(nn.Module):
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         )
-        print("Initialized FrameEncoder",out_dim)
+        print("Initialized FrameEncoder",out_dim,self.features,self.fc)
 
     def forward(self, x):
         # x: (B,T,C,H,W)
