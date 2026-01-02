@@ -1,3 +1,42 @@
+# ssm.py
+
+"""
+Input
+  ↓
+Linear Projection
+  ↓
+Depthwise Causal Convolution  ← local mixing
+  ↓
+Gating + Feature Modulation   
+  ↓
+Selective SSM                ← long-range memory
+  ↓
+Output Projection
+
+
+# Input x (B, T, D)
+    ↓
+Init state (s or h) = 0
+    ↓
+For t in 1…T:
+    ├─ Extract xt = x[:, t, :]
+    ├─ Update state:
+    │     SimpleSSM:  s = A*s + B*xt
+    │     SSM:        h = A*h + B(xt)
+    ├─ Compute output:
+    │     SimpleSSM:  yt = C*s + D*xt
+    │     SSM:        y = C(h)
+    └─ Append output to list
+    ↓
+Stack outputs → y (B, T, D)
+    ↓
+(Optional) LayerNorm(y) [SimpleSSM only]
+    ↓
+Return y
+
+
+"""
+
 import torch
 import torch.nn as nn
 
@@ -9,15 +48,14 @@ class SimpleSSM(nn.Module):
         h_t = A h_{t-1} + B x_t
         y_t = C h_t + D x_t
 
-✅ True diagonal SSM
-✅ Linear time in sequence length
-✅ Stable & parallelizable
-✅ Exactly how Mamba works internally
-
-complexity O(TD)
+        True diagonal SSM
+        Linear time in sequence length
+        Stable & parallelizable
+        Exactly how Mamba works internally
+        complexity O(TD)
     """
 
-    def __init__(self, d_model):
+    def __init__(self, d_model, use_nonlinearity=True):
         super().__init__()
         self.norm = nn.LayerNorm(d_model)
 
@@ -27,14 +65,16 @@ complexity O(TD)
         self.B = nn.Parameter(torch.randn(d_model))
         self.C = nn.Parameter(torch.randn(d_model))
         self.D = nn.Parameter(torch.randn(d_model))
-        #print("Initialized SimpleSSM",d_model)
+
+        self.norm = nn.LayerNorm(d_model)
+        self.use_nonlinearity = use_nonlinearity
+        self.act = nn.GELU() if use_nonlinearity else nn.Identity() # not to limit for complex ME patterns
+        print("Initialized SimpleSSM",d_model)
         
 
     def forward(self, x):
-        """
-        x: (batch, seq_len, d_model)
-        """
-
+        #        x: (batch, seq_len, d_model)
+        
         B, T, D = x.shape
         s = torch.zeros(B, D, device=x.device)
         outputs = []
@@ -67,13 +107,8 @@ if __name__ == "__main__":
 """
 
 class SSM(nn.Module):
-    """
-    Discrete-time State Space Model:
-        h_t = A h_{t-1} + B x_t
-        y_t = C h_t
-    """
 
-    def __init__(self, d_model):
+    def __init__(self, d_model, use_nonlinearity=True):
         super().__init__()
         self.d_model = d_model
 
@@ -82,17 +117,21 @@ class SSM(nn.Module):
         self.B = nn.Linear(d_model, d_model)
         self.C = nn.Linear(d_model, d_model)
 
+        self.norm = nn.LayerNorm(d_model)
+        self.use_nonlinearity = use_nonlinearity
+        self.act = nn.GELU() if use_nonlinearity else nn.Identity()
+
     def forward(self, x):
-        """
-        x: (B, T, D)
-        """
+        
+        #x: (B, T, D)
+        
         B, T, D = x.shape
         h = torch.zeros(B, D, device=x.device)
 
         outputs = []
 
         for t in range(T):
-            # 🔁 RECURRENCE (this is what makes it an SSM)
+            #  RECURRENCE (this is what makes it an SSM)
             h = self.A * h + self.B(x[:, t])
             y = self.C(h)
             outputs.append(y)

@@ -11,7 +11,37 @@ CASME2/
  │   ├── s02/
  │   └── ...
  ├── annotations.xlsx
- └── processed/"""
+ └── processed/
+ 
+ Annotation row (idx) from CSV/Excel
+          │
+          ▼
+Extract subject, video, emotion → map to label
+          │
+          ▼
+Build clip directory path → list sorted frames
+          │
+          ▼
+For each frame:
+   Read with cv2 → BGR to RGB → apply self.transform
+          │
+          ▼
+Stack frames → x: (T_original, C, H, W)
+          │
+          ▼
+Compute frame-to-frame motion magnitudes → scores
+          │
+          ▼
+Weighted temporal sampling using scores → select T frames
+          │
+          ▼
+Pad if x.shape[0] < T → x: (T, C, H, W)
+          │
+          ▼
+Return clip tensor x and label
+
+ 
+ """
  
  
 class CASME2Dataset(Dataset):
@@ -51,7 +81,7 @@ class CASME2Dataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.ann.iloc[idx]
-        print  (f"Processing row {idx}") 
+        #print  (f"Processing row {idx}") 
         #print(f"Processing row {idx}: {row.to_dict()}") 
 
         subject = row['Subject']
@@ -77,7 +107,7 @@ class CASME2Dataset(Dataset):
             images.append(img)
 
         x = torch.stack(images)   # (T, C, H,  W)
-        print(f"Frames done: {clip_dir}")
+        #print(f"Frames done: {clip_dir}")
 
         # Compute simple motion magnitude  for strong, learnable temporal signature
         diffs = (x[1:] - x[:-1]).abs().mean(dim=(1,2,3)) #peaks near the apex
