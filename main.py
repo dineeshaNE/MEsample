@@ -143,7 +143,9 @@ def main():
 
         print(f"Epoch {epoch} | Loss: {avg_loss:.4f} | Acc: {acc:.2f}%")
 
-        # freeze the best model=
+        # freeze the best model
+        '''
+        temporary closed to work with Git limit
         if not torch.isnan(torch.tensor(acc)) and acc > best_acc:
             best_acc = acc
             best_epoch = epoch
@@ -154,8 +156,9 @@ def main():
                   'optimizer_state': optimizer.state_dict(),
                   'best_acc': best_acc
             }, "best_model.pth")
-
+            
             print(f"🔥 New best model saved at epoch {epoch} with acc = {acc:.2f}%")
+            '''
 
             
     print("x min/max:", x.min().item(), x.max().item())
@@ -164,10 +167,12 @@ def main():
     print("Training step OK")
 
     #reload the best model
+    '''temporary closed to work with Git limit
     checkpoint = torch.load("best_model.pth")
     model.load_state_dict(checkpoint['model_state'])
     optimizer.load_state_dict(checkpoint['optimizer_state'])
     print(f"✅ Best model restored from epoch {checkpoint['epoch']} with acc = {checkpoint['best_acc']:.2f}%")
+    '''
 
       
     
