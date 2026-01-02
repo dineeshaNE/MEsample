@@ -131,10 +131,7 @@ def main():
             total_samples += y.size(0)
             running_loss += loss.item()
 
-
-        '''preds = logits.argmax(dim=1)
-        acc = (preds == y).float().mean()
-        print(f"Epoch {epoch} | Loss: {loss.item():.4f} | Acc: {acc:.2%}")'''
+            print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
 
  
         # ===== compute epoch metrics =====
@@ -144,8 +141,8 @@ def main():
         print(f"Epoch {epoch} | Loss: {avg_loss:.4f} | Acc: {acc:.2f}%")
 
         # freeze the best model
-        '''
-        temporary closed to work with Git limit
+        
+        #temporary closed to work with Git limit
         if not torch.isnan(torch.tensor(acc)) and acc > best_acc:
             best_acc = acc
             best_epoch = epoch
@@ -158,7 +155,7 @@ def main():
             }, "best_model.pth")
             
             print(f"🔥 New best model saved at epoch {epoch} with acc = {acc:.2f}%")
-            '''
+            
 
             
     print("x min/max:", x.min().item(), x.max().item())
@@ -166,12 +163,13 @@ def main():
 
     print("Training step OK")
 
+    ''' 
     #reload the best model
-    '''temporary closed to work with Git limit
+
     checkpoint = torch.load("best_model.pth")
     model.load_state_dict(checkpoint['model_state'])
     optimizer.load_state_dict(checkpoint['optimizer_state'])
-    print(f"✅ Best model restored from epoch {checkpoint['epoch']} with acc = {checkpoint['best_acc']:.2f}%")
+    print(f" Best model restored from epoch {checkpoint['epoch']} with acc = {checkpoint['best_acc']:.2f}%")
     '''
 
       
