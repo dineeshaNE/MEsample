@@ -1,6 +1,5 @@
-# main.py
 
-##############################################################################
+##### main.py##########################################################################
 """
 main
  └──Build dataset
@@ -40,6 +39,7 @@ from MambaClassifier import MambaClassifier
 from transforms import mytransforms
 import pandas as pd
 from torch.utils.data import random_split
+from VideoSwinMamba import VideoSwinMamba
 
 def main():
 
@@ -70,7 +70,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # for sending data and model to the correct device
 
     #model = MambaClassifier(64,2) with toy version
-    model = MERModel(64, 7).to(device) # 7 emotion classes
+    #model = MERModel(64, 7).to(device) # 7 emotion classes
+    model = VideoSwinMamba(num_classes=7).to(torch.device)
+
+
     criterion = nn.CrossEntropyLoss()
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-5) # with CASME2
     """this often gives 10–25% accuracy gains on small MER datasets
@@ -85,6 +88,16 @@ def main():
 
     best_val_acc = 0.0
     best_epoch = 0
+
+    x, y = next(iter(loader))
+x = x.to(device)
+
+with torch.no_grad():
+out = model(x)
+
+print("Input:", x.shape)
+print("Output:", out.shape)
+
 
        
      #training loop
@@ -183,6 +196,7 @@ def main():
     test_acc = 100 * test_correct / test_total
     print(f"🧪 Final Test Accuracy: {test_acc:.2f}%")
 
+\
     print("✅ Experiment finished")
 
 '''

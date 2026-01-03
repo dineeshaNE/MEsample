@@ -118,6 +118,8 @@ class VisionMamba(nn.Module):
         b = self.bwd_ssm(b)
         b = torch.flip(b, dims=[1])
 
+        # fb = (f + b) * z  |     y = self.ssm(fb)
+
         # gate
         z = self.activation(z)
 

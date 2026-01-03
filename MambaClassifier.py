@@ -1,45 +1,27 @@
+
+################ MambaClassifier.py ##################
+#
+#Input
+# ├─ Norm
+# ├─ Linear projection → split into 2 paths
+# ├─ Path A:   Conv1D → SSM Scan (Ω) 
+# └─ Path B:   Activation
+# 
+# Then:
+#   Path A ⊙ Path B   (element-wise gate)
+#   → Linear projection
+#   → Residual add with original input
+#
+#   Input-> Linear Projection → Depthwise Causal Convolution (local mixing) → Gating + Feature Modulation   
+#  → Selective SSM (long-range memory) → Output Projection
+################################################################
+
 import torch
 import torch.nn as nn
 # from mamba_ssm import Mamba
 #from mamba import SimpleMamba
 from mamba import VisionMamba
 
-"""
-Video frames (B, T, C, H, W)
-        │
-FrameEncoder → features (B, T, out_dim)
-        │
-Temporal Model → video-level embedding → classifier → Prediction
-        │
-Output → emotion class
-
-Input
- ├─ Norm
- ├─ Linear projection → split into 2 paths
- │
- ├─ Path A:   Conv1D → SSM Scan (Ω) 
- │
- └─ Path B:   Activation
- 
- Then:
-   Path A ⊙ Path B   (element-wise gate)
-   → Linear projection
-   → Residual add with original input
-
-   Input
-  ↓
-Linear Projection
-  ↓
-Depthwise Causal Convolution  ← local mixing
-  ↓
-Gating + Feature Modulation   
-  ↓
-Selective SSM                ← long-range memory
-  ↓
-Output Projection
-
-
-"""
 
 class MambaClassifier(nn.Module):
     def __init__(self, d_model=64, num_classes=7):
@@ -63,9 +45,7 @@ class MambaClassifier(nn.Module):
             d_state=16,
             d_conv=4,
             expand=2
-        )
-
-    
+        ) 
         '''
         # Path B
         self.activation = nn.SiLU()
@@ -83,7 +63,7 @@ class MambaClassifier(nn.Module):
 
         # Treat each patch as its own temporal sequence
         x = x.permute(0, 2, 1, 3).reshape(B*N, T, D)      
-          
+
         residual = x
 
         x = self.norm(x)
@@ -117,15 +97,7 @@ class MambaClassifier(nn.Module):
 
         return logits
 
-    
-        """h = self.backbone(x)       # (B, T, D)
 
-        h_last = h[:, -1, :]       # B D
-        logits = self.classifier(h_last)  # (B, num_classes)
-
-        print(f"MambaClassifier done, Backbone:{h.shape} Last: {h_last.shape} Logits: {logits.shape}")
-    
-        return logits"""
     
 """ mamba_ssm for real mamba;
 class MambaClassifier(nn.Module):

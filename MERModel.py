@@ -1,15 +1,11 @@
 ############### MerModel.py ########################
-"""
-Input video frames (B, T, C, H, W)
-        ▼
-FrameEncoder → Temporal feature embedding (B, T, D)
-        ▼
-Dropout (regularization)
-        ▼
-MambaClassifier → Class scores (B, num_classes)
-
+#Input video frames (B, T, C, H, W)
+#PatchFrameEncoder → Temporal feature embedding (B, T, D)
+#Dropout (regularization)
+#MambaClassifier → Class scores (B, num_classes)
+#
 # Input(B,T,C,H,W) → FrameEncoder(B,T,D) → Dropout(B,T,D) → MambaClassifier(B,num_classes) → Output(B,num_classes)
-"""
+#
 ##########################################################################
 
 import torch.nn as nn
@@ -22,6 +18,7 @@ class MERModel(nn.Module):
         super().__init__()
         #self.encoder = FrameEncoder(d_model)
         self.encoder = PatchFrameEncoder(d_model)
+        #print("Encoder output:", x.shape) [B, T, N, D]
         self.mamba = MambaClassifier(d_model, num_classes)
         self.dropout = nn.Dropout(dropout)  # optional dropout for regularization
         #print("Initialized MERModel",d_model,num_classes,self.encoder,self.mamba)

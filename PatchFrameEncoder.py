@@ -1,3 +1,11 @@
+
+#############PatchFrameEncoder.py##################################################
+#For each video frame:
+#Split into patches
+#Run each patch through ResNet18
+#roduce an embedding vector per patch
+###############################################
+
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
