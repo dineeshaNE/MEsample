@@ -16,6 +16,9 @@ egg-info/
 *.egg-info/
 pip-wheel-metadata/
 *.egg
+CASME2/
+*.zip
+
 
 # Editor and IDE
 .vscode/

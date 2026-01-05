@@ -14,7 +14,7 @@ main
      VALIDATE on val_loader
       for epoch
        └── DataLoader.__iter__ → __next__ → CASME2Dataset.__getitem__
-       └── MERModel.forward → MambaClassifier.forward → SimpleMamba.forward → return logits
+       └── MERModel.forward → 
        └── CrossEntropyLoss.forward → loss
        └── optimizer.zero_grad
        └── loss.backward
@@ -32,9 +32,9 @@ from pyexpat import model
 import torch, torch.nn as nn
 from torch.utils.data import DataLoader
 from CASME2Dataset import CASME2Dataset
-from MERModel import MERModel
+#from MERModel import MERModel
 #from classifier import MambaClassifier
-from MambaClassifier import MambaClassifier
+#from MambaClassifier import MambaClassifier
 #from dataset import ToySequenceDataset
 from transforms import mytransforms
 import pandas as pd
@@ -71,7 +71,7 @@ def main():
 
     #model = MambaClassifier(64,2) with toy version
     #model = MERModel(64, 7).to(device) # 7 emotion classes
-    model = VideoSwinMamba(num_classes=7).to(torch.device)
+    model = VideoSwinMamba(num_classes=7).to(device)
 
 
     criterion = nn.CrossEntropyLoss()
@@ -81,22 +81,23 @@ def main():
     The classifier is newly initialized and must learn fast"""
 
     optimizer = torch.optim.Adam([
-    {"params": model.encoder.parameters(), "lr": 1e-5},
-    {"params": model.mamba.parameters(), "lr": 1e-3}
+    {"params": model.backbone.parameters(), "lr": 1e-5},
+    {"params": model.temporal.parameters(), "lr": 1e-3}
 ])
     print("Model and components initialized.")
 
     best_val_acc = 0.0
     best_epoch = 0
 
-    x, y = next(iter(loader))
-x = x.to(device)
+      # quick test run to verify dimensions
+    x, y = next(iter(train_loader))
+    x = x.to(device)
 
-with torch.no_grad():
-out = model(x)
+    with torch.no_grad():
+      out = model(x)
 
-print("Input:", x.shape)
-print("Output:", out.shape)
+    print("Input:", x.shape)
+    print("Output:", out.shape)
 
 
        

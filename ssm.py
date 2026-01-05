@@ -40,7 +40,7 @@ Return y
 import torch
 import torch.nn as nn
 
-class SimpleSSM(nn.Module):
+class SimpleSsm(nn.Module):
     """
     Real State Space Model (causal, recurrent)
 

@@ -1,5 +1,6 @@
+import torch, torch.nn as nn
 from SwinMamba import SwinMamba
-from SwinMambaBlock import SimpleMamba
+from SwinMambaBlock import SimpleSSM
 
 class VideoSwinMamba(nn.Module):
     def __init__(self, num_classes=7):
@@ -29,7 +30,7 @@ class TemporalMamba(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
-        self.mamba = SimpleMamba(dim)
+        self.mamba = SimpleSSM(dim)
 
     def forward(self, x):
         # x: (B, T, C)

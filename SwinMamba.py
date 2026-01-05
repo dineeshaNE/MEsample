@@ -73,8 +73,6 @@ class SwinMamba(nn.Module):
 
         self.head = nn.Sequential(
             nn.LayerNorm(512),
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
             nn.Linear(512, num_classes)
         )
 
@@ -93,8 +91,10 @@ class SwinMamba(nn.Module):
         x = self.stage4(x)
 
         B, H, W, C = x.shape
-        x = x.view(B, H*W, C).transpose(1,2)
+        x = x.view(B, H*W, C)
+        x = x.mean(dim=1)     # global spatial pooling
         return self.head(x)
+
     
 model = SwinMamba(in_ch=3, num_classes=7)
 x = torch.randn(2, 3, 224, 224)
