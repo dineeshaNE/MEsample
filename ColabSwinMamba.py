@@ -15,6 +15,8 @@ from torch.utils.data import Dataset
 
 from torchvision import transforms
 
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
+
 #--------------------------
 # CASME2 Dataset    
 #--------------------------
@@ -33,7 +35,7 @@ class CASME2Dataset(Dataset):
         else:
             raise ValueError("Annotation file must be .csv or .xlsx")
 
-        print(self.ann.columns)
+        #print(self.ann.columns)
 
         if limit is not None:
             self.ann = self.ann.iloc[:limit].reset_index(drop=True)
@@ -141,7 +143,7 @@ class Mamba(nn.Module):
         self.norm = nn.LayerNorm(d_model)
         self.use_nonlinearity = use_nonlinearity
         self.act = nn.GELU() if use_nonlinearity else nn.Identity() # not to limit for complex ME patterns
-        print("Initialized SimpleSSM",d_model)
+        #print("Initialized SimpleSSM",d_model)
 
 
     def forward(self, x):
@@ -522,18 +524,30 @@ def main():
 
     train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
 
-    train_loader = DataLoader(train_set, batch_size=4, shuffle=True)
-    val_loader   = DataLoader(val_set,   batch_size=4, shuffle=False)
-    test_loader  = DataLoader(test_set,  batch_size=4, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=8, shuffle=True)
+    val_loader   = DataLoader(val_set,   batch_size=8, shuffle=False)
+    test_loader  = DataLoader(test_set,  batch_size=8, shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # for sending data and model to the correct device
 
     model = VideoSwinMamba(num_classes=7).to(device)
+
+    # Handle class imbalance with weighted loss - higher weight to minority classes
+    labels = dataset.ann['Estimated Emotion'].str.lower().map(dataset.label_map).values
+    class_counts = torch.bincount(torch.tensor(labels))
+    weights = 1.0 / (class_counts.float() + 1e-6)
+    weights = weights / weights.sum() * len(class_counts)
+
+    criterion = nn.CrossEntropyLoss(weight=weights.to(device))
+    
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam([
     {"params": model.backbone.parameters(), "lr": 1e-5},
     {"params": model.temporal.parameters(), "lr": 1e-3}
 ])
+    #  gradually lowers the learning rate
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+
     print("Model and components initialized.")
 
     best_val_acc = 0.0
@@ -549,7 +563,7 @@ def main():
     print("Input:", x.shape)
     print("Output:", out.shape)
 
-
+    log = []
 
      #training loop
     for epoch in range(2):
@@ -564,6 +578,7 @@ def main():
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # avoid exploding gradients
             optimizer.step()
 
             # inside batch loop (optional for debugging)
@@ -604,6 +619,9 @@ def main():
           f"Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | "
           f"Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%"
 )
+      log.append([epoch, train_loss, train_acc, val_loss, val_acc])
+      
+      scheduler.step()
 
 
       # freeze the best model
@@ -614,14 +632,22 @@ def main():
             torch.save(model.state_dict(), "best_model.pth")
 
     print("Training & Validation step OK")
+    log_df = pd.DataFrame(log, columns=[
+    "epoch", "train_loss", "train_acc", "val_loss", "val_acc"
+])
+
+    log_df.to_csv("training_log.csv", index=False)
 
     # ========== TEST ==========
+    
     # reload the best model
 
     model.load_state_dict(torch.load("best_model.pth", weights_only=True))
     model.eval()
 
     test_correct, test_total = 0, 0
+    all_preds = []
+    all_gt = []
 
     with torch.no_grad():
         for x, y in test_loader:
@@ -631,8 +657,28 @@ def main():
             test_correct += (preds == y).sum().item()
             test_total += y.size(0)
 
+            all_preds.extend(preds.cpu().numpy())
+            all_gt.extend(y.cpu().numpy())
+
+#from sklearn.metrics import classification_report, confusion_matrix, f1_score
+
     test_acc = 100 * test_correct / test_total
     print(f"🧪 Final Test Accuracy: {test_acc:.2f}%")
+
+
+    print(classification_report(all_gt, all_preds, digits=4, zero_division=0))
+    print("Micro-F1:", f1_score(all_gt, all_preds, average='micro', zero_division=0))
+    print("Confusion Matrix:\n", confusion_matrix(all_gt, all_preds))
+
+    # ---------- Save evaluation results ----------
+    report = classification_report(all_gt, all_preds, digits=4, output_dict=True)
+    cm = confusion_matrix(all_gt, all_preds)
+
+    pd.DataFrame(report).transpose().to_csv("classification_report.csv")
+
+    pd.DataFrame(cm).to_csv("confusion_matrix.csv", index=False)
+
+    print("📁 Saved: classification_report.csv & confusion_matrix.csv")
 
 \
     print("✅ Experiment finished")
