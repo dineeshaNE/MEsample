@@ -109,9 +109,9 @@ class CASME2Dataset(Dataset):
         return x, label
 
 # -------------------------------
-# Simple SSM
+# Mamba instead in ssm_mamba
 # -------------------------------
-class SimpleSSM(nn.Module):
+class Mamba(nn.Module):
     """
     Real State Space Model (causal, recurrent)
 
@@ -133,6 +133,7 @@ class SimpleSSM(nn.Module):
 
         # Diagonal SSM parameters
         self.A = nn.Parameter(torch.randn(d_model))
+        A = torch.tanh(self.A)
         self.B = nn.Parameter(torch.randn(d_model))
         self.C = nn.Parameter(torch.randn(d_model))
         self.D = nn.Parameter(torch.randn(d_model))
@@ -166,6 +167,75 @@ class SimpleSSM(nn.Module):
         y = torch.stack(outputs, dim=1)
         return self.norm(y)
 
+#-------------------------------
+# OrthogonalSpatial Mamba Modules
+#-------------------------------
+
+class OrthogonalSpatialMamba(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.ssm = Mamba(d_model=dim)
+
+    def forward(self, x):
+        # x: (B, H, W, C)
+        B, H, W, C = x.shape
+
+        scans = []
+
+        # 1. TL → BR
+        s1 = x.reshape(B, H*W, C)
+        scans.append(self.ssm(s1))
+
+        # 2. BR → TL
+        s2 = torch.flip(s1, dims=[1])
+        scans.append(self.ssm(s2))
+
+        # 3. TR → BL
+        s3 = x.flip(2).reshape(B, H*W, C)
+        scans.append(self.ssm(s3))
+
+        # 4. BL → TR
+        s4 = x.flip(1).reshape(B, H*W, C)
+        scans.append(self.ssm(s4))
+
+        # Fuse
+        y = sum(scans) / len(scans)
+
+        return y.reshape(B, H, W, C)
+    
+    # -------------------------------
+    # Window Orthogonal Mamba
+    # -------------------------------
+    
+class WindowOrthogonalMamba(nn.Module):
+    def __init__(self, dim, window_size):
+        super().__init__()
+        self.ssm = Mamba(d_model=dim)
+        self.ws = window_size
+
+    def forward(self, w):
+        # w: (Bwin, ws*ws, C)
+        B, L, C = w.shape
+        ws = self.ws
+
+        w = w.view(B, ws, ws, C)
+
+        s1 = w.reshape(B, L, C)
+        y1 = self.ssm(s1)
+
+        s2 = torch.flip(s1, dims=[1])
+        y2 = self.ssm(s2)
+
+        s3 = w.flip(2).reshape(B, L, C)
+        y3 = self.ssm(s3)
+
+        s4 = w.flip(1).reshape(B, L, C)
+        y4 = self.ssm(s4)
+
+        y = (y1 + y2 + y3 + y4) / 4
+        return y.view(B, L, C)
+
+
 # -------------------------------
 # Swin-Mamba Block
 # -------------------------------
@@ -178,7 +248,10 @@ class SwinMambaBlock(nn.Module):
 
         self.norm1 = nn.LayerNorm(dim)
         #self.mamba = SimpleMamba(dim)
-        self.ssm = SimpleSSM(dim)
+        #self.mamba = Mamba(dim)
+        #self.spatial_mamba = OrthogonalSpatialMamba(dim)
+        self.spatial_mamba = WindowOrthogonalMamba(dim, window_size)
+
         self.norm2 = nn.LayerNorm(dim)
 
         self.mlp = nn.Sequential(
@@ -210,7 +283,8 @@ class SwinMambaBlock(nn.Module):
         windows = self.window_partition(x)
         windows = self.norm1(windows)
         #windows = self.mamba(windows)
-        windows = self.ssm(windows)
+        #windows = self.ssm(windows)
+        windows =self.spatial_mamba(windows)
         x = self.window_reverse(windows, H, W)
 
         if self.shift:
@@ -227,13 +301,37 @@ class TemporalMamba(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
-        self.mamba = SimpleSSM(dim)
+        self.mamba = Mamba(dim)
 
     def forward(self, x):
         # x: (B, T, C)
         x = self.norm(x)
-        x = self.mamba(x)
-        return x
+        #x = self.mamba(x)
+        y_fwd = self.mamba(x)
+        y_bwd = self.mamba(torch.flip(x, dims=[1]))
+        y_bwd = torch.flip(y_bwd, dims=[1])
+
+        return self.alpha * y_fwd + (1 - self.alpha) * y_bwd
+        #return x
+    
+# -------------------------------
+# Bidirectional Temporal Mamba
+#-------------------------------    
+class BidirectionalTemporalMamba(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.ssm = Mamba(d_model=dim)
+        self.alpha = nn.Parameter(torch.tensor(0.5))
+
+    def forward(self, x):
+        # x: (B, T, C)
+
+        y_fwd = self.ssm(x)
+        y_bwd = self.ssm(torch.flip(x, dims=[1]))
+        y_bwd = torch.flip(y_bwd, dims=[1])
+
+        return self.alpha * y_fwd + (1 - self.alpha) * y_bwd
+
     
     
 # -------------------------------
@@ -272,12 +370,27 @@ class PatchMerging(nn.Module):
 # Swin-Mamba Stage
 # -------------------------------
 class SwinMambaStage(nn.Module):
+    '''
     def __init__(self, dim, depth, window):
         super().__init__()
         self.blocks = nn.ModuleList([
             SwinMambaBlock(dim, window, shift=(i%2==1))
             for i in range(depth)
-        ])
+        ])'''
+
+    def __init__(self, dim, depth, window_size=7):
+        super().__init__()
+        self.blocks = nn.ModuleList()
+
+        for i in range(depth):
+            self.blocks.append(
+                SwinMambaBlock(
+                    dim=dim,
+                    window_size=window_size,
+                    shift=(i % 2 == 1)
+                )
+            )
+            
 
     def forward(self, x):
         for blk in self.blocks:
@@ -287,14 +400,15 @@ class SwinMambaStage(nn.Module):
 
 # -------------------------------
 # Full Backbone
+#
 # -------------------------------
 class SwinMamba(nn.Module):
-    def __init__(self, in_ch=3, num_classes=7):
+    def __init__(self, in_ch=3, out_dim=512):
         super().__init__()
 
         self.patch = PatchEmbed(in_ch, 64)
 
-        self.stage1 = SwinMambaStage(64, 2, 7)
+        self.stage1 = SwinMambaStage(64, 2, 7) # window size 7
         self.merge1 = PatchMerging(64)
 
         self.stage2 = SwinMambaStage(128, 2, 7)
@@ -307,7 +421,7 @@ class SwinMamba(nn.Module):
 
         self.head = nn.Sequential(
             nn.LayerNorm(512),
-            nn.Linear(512, num_classes)
+            nn.Linear(512, out_dim)
         )
 
     def forward(self, x):
@@ -337,8 +451,10 @@ class VideoSwinMamba(nn.Module):
     def __init__(self, num_classes=7):
         super().__init__()
 
-        self.backbone = SwinMamba(in_ch=3, num_classes=512)
-        self.temporal = TemporalMamba(512)
+        # Spatial Mamba (orthogonal scans)
+        # Bidirectional temporal SSM
+        self.backbone = SwinMamba(in_ch=3, out_dim=512)
+        self.temporal = BidirectionalTemporalMamba(512) #TemporalMamba(512)
         self.classifier = nn.Linear(512, num_classes)
 
     def forward(self, x):
@@ -349,11 +465,8 @@ class VideoSwinMamba(nn.Module):
         for t in range(T):
             f = self.backbone(x[:, t])   # (B, 512)
             feats.append(f)
-
         feats = torch.stack(feats, dim=1)  # (B, T, 512)
-
         feats = self.temporal(feats)       # Temporal MER modeling
-
         return self.classifier(feats.mean(dim=1))
 
 
@@ -395,11 +508,11 @@ def main():
 
     #dataset = ToySequenceDataset()
     dataset = CASME2Dataset(
-    root="sample_data/CASME2/CASME2/raw",
-    annotation_file="sample_data/CASME2.csv",
+    root="CASME2/raw",
+    annotation_file="CASME2/CASME2.csv",
     transform=mytransforms,
     T=30,
-    limit = 8
+    limit = 20
 )
 
     N = len(dataset)
@@ -524,6 +637,7 @@ def main():
 \
     print("✅ Experiment finished")
 
+
 if __name__ == "__main__":
   import traceback
 try:
@@ -532,3 +646,4 @@ except Exception as e:
     print("Exception in main:", repr(e))
     traceback.print_exc()
     raise
+ 

@@ -47,7 +47,7 @@ def main():
     #dataset = ToySequenceDataset()
     dataset = CASME2Dataset(
     root="CASME2/raw",
-    annotation_file="CASME2/annotations.csv",
+    annotation_file="CASME2/CASME2.csv",
     transform=mytransforms,
     T=30,
     limit = 20
@@ -208,6 +208,7 @@ def main():
 
       
     
+
 
 if __name__ == "__main__":
     import traceback
