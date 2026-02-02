@@ -6,6 +6,7 @@ from pyexpat import model
 import torch, torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 import pandas as pd
+import warnings
 
 import os
 import cv2
@@ -16,6 +17,11 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from sklearn.model_selection import StratifiedShuffleSplit
+
+# Suppress the UndefinedMetricWarning
+#warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.metrics._classification')
+
 
 #--------------------------
 # CASME2 Dataset    
@@ -506,37 +512,58 @@ val_transforms = transforms.Compose([
 # -------------------------------
 
 def main():
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     #dataset = ToySequenceDataset()
     dataset = CASME2Dataset(
     root="CASME2/raw",
     annotation_file="CASME2/CASME2.csv",
     transform=mytransforms,
-    T=30,
-    limit = 20
+    T=30 #,
+    #limit = 20
 )
-
+  
     N = len(dataset)
     train_len = int(0.7 * N)
     val_len   = int(0.15 * N)
     test_len  = N - train_len - val_len
 
+    # Handle class imbalance with weighted loss - higher weight to minority classes
+    labels = dataset.ann['Estimated Emotion'].str.lower().map(dataset.label_map).values
+    #class_counts = torch.bincount(torch.tensor(labels))
+    
+    class_counts = torch.bincount(torch.tensor(labels), minlength=7)
+
+    weights = 1.0 / (class_counts.float() + 1e-6)
+    weights = weights / weights.sum() * len(class_counts)
+
     train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
+    
+    # Create DataLoaders
+    train_loader = DataLoader(train_set, batch_size=4, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=4, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=4, shuffle=False)
+    
+    '''
+    labels = [dataset[i][1] for i in range(len(dataset))]
+    labels = np.array(labels)
 
-    train_loader = DataLoader(train_set, batch_size=8, shuffle=True)
-    val_loader   = DataLoader(val_set,   batch_size=8, shuffle=False)
-    test_loader  = DataLoader(test_set,  batch_size=8, shuffle=False)
+    # Stratified Split
+    from sklearn.model_selection import StratifiedShuffleSplit
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # for sending data and model to the correct device
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+
+    import numpy as np    
+    indices = np.arange(len(dataset))
+    for train_idx, val_idx in sss.split(indices, labels):
+        train_set = torch.utils.data.Subset(dataset, train_idx)
+        val_set   = torch.utils.data.Subset(dataset, val_idx)
+    '''
+
 
     model = VideoSwinMamba(num_classes=7).to(device)
 
-    # Handle class imbalance with weighted loss - higher weight to minority classes
-    labels = dataset.ann['Estimated Emotion'].str.lower().map(dataset.label_map).values
-    class_counts = torch.bincount(torch.tensor(labels))
-    weights = 1.0 / (class_counts.float() + 1e-6)
-    weights = weights / weights.sum() * len(class_counts)
+
 
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
     
@@ -547,9 +574,16 @@ def main():
 ])
     #  gradually lowers the learning rate
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+    #scheduler.step(goes after Optimizer step) 
+
 
     print("Model and components initialized.")
-
+    '''
+    # print class distribution in train and val sets
+    from collections import Counter
+    print("Train:", Counter([labels[i] for i in train_idx]))
+    print("Val:",   Counter([labels[i] for i in val_idx]))
+    '''
     best_val_acc = 0.0
     best_epoch = 0
 
@@ -593,6 +627,7 @@ def main():
             print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
       train_acc = 100 * train_correct / train_total
       train_loss /= len(train_loader)
+      
 
       # ========== VALIDATE ==========
       model.eval()
@@ -671,7 +706,7 @@ def main():
     print("Confusion Matrix:\n", confusion_matrix(all_gt, all_preds))
 
     # ---------- Save evaluation results ----------
-    report = classification_report(all_gt, all_preds, digits=4, output_dict=True)
+    report = classification_report(all_gt, all_preds, digits=4, output_dict=True, zero_division=0)
     cm = confusion_matrix(all_gt, all_preds)
 
     pd.DataFrame(report).transpose().to_csv("classification_report.csv")

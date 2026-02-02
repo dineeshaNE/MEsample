@@ -18,6 +18,7 @@ pip-wheel-metadata/
 *.egg
 CASME2/
 *.zip
+*.csv
 
 
 # Editor and IDE
@@ -65,3 +66,4 @@ venv310/
 # Python cache
 __pycache__/
 *.pyc
+.gitignore
