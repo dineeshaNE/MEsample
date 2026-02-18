@@ -7,6 +7,7 @@ import torch, torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 import pandas as pd
 import warnings
+import csv
 
 import os
 import cv2
@@ -300,7 +301,183 @@ class SwinMambaBlock(nn.Module):
 
         x = x + self.mlp(self.norm2(x))
         return x
+    
+# -------------------------------
+# Temporal Selective Mamba
+#-------------------------------
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
+class TemporalSelectiveMamba(nn.Module):
+    """
+    Selective State Space Model applied ONLY along temporal dimension.
+    Designed for Micro-Expression Recognition (MER).
+    """
+
+    def __init__(self, d_model):
+        super().__init__()
+
+        self.d_model = d_model
+
+        # Input-dependent projections (Selective SSM)
+        self.in_proj = nn.Linear(d_model, 3 * d_model)
+
+        # Diagonal state matrix A (learned, stabilized)
+        self.A = nn.Parameter(torch.randn(d_model))
+
+        # Output projection
+        self.out_proj = nn.Linear(d_model, d_model)
+
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        """
+        x: (B, T, D)
+        """
+        B, T, D = x.shape
+        assert D == self.d_model
+
+        x = self.norm(x)
+
+        # Generate selective parameters
+        proj = self.in_proj(x)
+        dt, Bx, Cx = proj.chunk(3, dim=-1)
+
+        # Stabilize dynamics
+        dt = torch.sigmoid(dt)           # (0, 1)
+        Bx = torch.tanh(Bx)
+        Cx = torch.tanh(Cx)
+
+        # Initialize state
+        s = torch.zeros(B, D, device=x.device)
+        outputs = []
+
+        #A = torch.abs(self.A)  # ensure stability
+        A = -torch.exp(self.A) # better stability
+
+
+        for t in range(T):
+            dt_t = dt[:, t]
+            Bx_t = Bx[:, t]
+            Cx_t = Cx[:, t]
+
+            # Discretized selective update
+            A_bar = torch.exp(-dt_t * A)
+            s = A_bar * s + Bx_t
+            y = Cx_t * s
+
+            outputs.append(y)
+
+        y = torch.stack(outputs, dim=1)
+        #return self.out_proj(y)
+        return x + self.out_proj(y)
+
+# -------------------------------
+# Temporal Selective True Mamba Style
+#-------------------------------
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class TemporalSelectiveTrueMamba(nn.Module):
+    """
+    Selective State Space Model applied ONLY along temporal dimension.
+    Designed for Micro-Expression Recognition (MER).
+    """
+
+    #def __init__(self, d_model):
+        
+    def __init__(self, d_model, d_conv=3, dropout=0.1):
+        super().__init__()
+
+        self.d_model = d_model
+
+        # Pre-norm (standard Mamba style)
+        self.norm = nn.LayerNorm(d_model)
+
+        # Input-dependent projections (Selective SSM)
+        self.in_proj = nn.Linear(d_model, 3 * d_model)
+
+        # Depthwise temporal convolution (local mixing)
+        self.dwconv = nn.Conv1d(
+            d_model,
+            d_model,
+            kernel_size=d_conv,
+            padding=d_conv // 2,
+            groups=d_model  # depthwise
+        )
+
+        # Diagonal state matrix A (learned, stabilized)
+        #self.A = nn.Parameter(torch.randn(d_model))
+        # Stable diagonal A parameterization
+        self.A_log = nn.Parameter(torch.randn(d_model))
+
+        # Output projection
+        self.out_proj = nn.Linear(d_model, d_model)
+
+        self.dropout = nn.Dropout(dropout)
+
+        #self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        """
+        x: (B, T, D)
+        """
+        B, T, D = x.shape
+        assert D == self.d_model
+
+        x = self.norm(x)
+
+        # Local temporal mixing (Conv1D expects B, C, T)
+        x_conv = self.dwconv(x.transpose(1, 2)).transpose(1, 2)
+
+        # Generate selective parameters
+        proj = self.in_proj(x)
+        dt, Bx, Cx = proj.chunk(3, dim=-1)
+
+        # Stabilize dynamics
+        dt = torch.sigmoid(dt)           # (0, 1)
+        Bx = torch.tanh(Bx)
+        #Cx = torch.tanh(Cx)
+        gate = torch.sigmoid(Cx)   # gated output
+        # Stable negative A
+        A = -torch.exp(self.A_log)
+                #A = torch.abs(self.A)  # ensure stability
+        #A = -torch.exp(self.A) # better stability
+
+        # Initialize state
+        s = torch.zeros(B, D, device=x.device)
+        outputs = []
+
+
+
+
+        for t in range(T):
+            dt_t = dt[:, t]
+            Bx_t = Bx[:, t]
+            #Cx_t = Cx[:, t]
+            gate_t = gate[:, t]
+
+            # Discretized selective update
+            #A_bar = torch.exp(-dt_t * A)
+            #s = A_bar * s + Bx_t
+            #y = Cx_t * s
+
+            A_bar = torch.exp(dt_t * A)
+            s = A_bar * s + Bx_t
+            y = gate_t * s
+
+            outputs.append(y)
+
+        y = torch.stack(outputs, dim=1)
+
+        y = self.out_proj(y)
+        y = self.dropout(y)      
+
+        #return self.out_proj(y)
+        return x + self.out_proj(y)
+    
 # -------------------------------
 # Temporal Mamba
 #-------------------------------
@@ -310,6 +487,7 @@ class TemporalMamba(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.mamba = Mamba(dim)
+        #self.mamba = TemporalSelectiveMamba(dim)
 
     def forward(self, x):
         # x: (B, T, C)
@@ -328,7 +506,8 @@ class TemporalMamba(nn.Module):
 class BidirectionalTemporalMamba(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        self.ssm = Mamba(d_model=dim)
+        #self.ssm = Mamba(d_model=dim)
+        self.ssm = TemporalSelectiveTrueMamba(dim)
         self.alpha = nn.Parameter(torch.tensor(0.5))
 
     def forward(self, x):
@@ -452,7 +631,7 @@ class SwinMamba(nn.Module):
         return self.head(x)
 
 # -------------------------------
-# Full Video Swin-Mamba for MER
+# Video Swin-Mamba for MER
 # -------------------------------
 
 class VideoSwinMamba(nn.Module):
@@ -540,30 +719,12 @@ def main():
     train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
     
     # Create DataLoaders
-    train_loader = DataLoader(train_set, batch_size=4, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=4, shuffle=False)
-    test_loader = DataLoader(test_set, batch_size=4, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=8, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=8, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=8, shuffle=False)
     
-    '''
-    labels = [dataset[i][1] for i in range(len(dataset))]
-    labels = np.array(labels)
-
-    # Stratified Split
-    from sklearn.model_selection import StratifiedShuffleSplit
-
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-
-    import numpy as np    
-    indices = np.arange(len(dataset))
-    for train_idx, val_idx in sss.split(indices, labels):
-        train_set = torch.utils.data.Subset(dataset, train_idx)
-        val_set   = torch.utils.data.Subset(dataset, val_idx)
-    '''
-
 
     model = VideoSwinMamba(num_classes=7).to(device)
-
-
 
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
     
@@ -598,6 +759,20 @@ def main():
     print("Output:", out.shape)
 
     log = []
+
+    log_path = "experiment_log.csv"
+
+    if not os.path.exists(log_path):
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "epoch",
+                "train_loss",
+                "val_loss",
+                "train_acc",
+                "val_acc"
+            ])
+
 
      #training loop
     for epoch in range(2):
@@ -672,6 +847,17 @@ def main():
 ])
 
     log_df.to_csv("training_log.csv", index=False)
+
+    with open(log_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            epoch + 1,
+            round(train_loss, 5),
+            round(val_loss, 5),
+            round(train_acc, 4),
+            round(val_acc, 4)
+        ])
+
 
     # ========== TEST ==========
     
