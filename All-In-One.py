@@ -697,7 +697,7 @@ class SwOSMBTM(nn.Module):
 
 
     def forward(self, x):
-        B = x.size(0)
+        B = x.size(0) # never cfg.batch_size because of the last batch, which can be smaller
         T = self.T
         # x: (B, T, C, H, W)
         B, T, C, H, W = x.shape
@@ -705,13 +705,12 @@ class SwOSMBTM(nn.Module):
         feats = []
 
             
-            # Flatten temporal dimension
+        # Flatten temporal dimension
         x = x.reshape(B * T, C, H, W)
-        feats = self.backbone(x)
-        #x = x.reshape(B * T, C, H, W)
+        feats = self.backbone(x) # (B*T, 512)
         feats = feats.reshape(B, T, -1)   # (B, T, 512)
-       
         feats = self.temporal(feats)       # Temporal MER modeling
+
         return self.classifier(feats.mean(dim=1))
 
 
@@ -747,9 +746,40 @@ val_transforms = transforms.Compose([
 #------------------------------------
 # Central config for ColabSwinMamba.
 #-----------------------------------
-#Edit values below. This file exposes a single `cfg` object imported
-#by the training script (`from config import cfg`).
+class Config:
+    def __init__(self):
+        # Dataset / IO
+        self.DATA_ROOT = "CASME2/raw"
+        self.ANNOTATION_FILE = "CASME2/CASME2.csv"
+        self.LIMIT = 20
+        self.NUM_FRAMES = 30
 
+        # Training
+        self.BATCH_SIZE = 8
+        self.LR = 1e-3
+        self.EPOCHS = 2
+        self.TRAIN_SPLIT = 0.7
+        self.VAL_SPLIT = 0.15
+        self.TEST_SPLIT = 0.15
+
+        # Model
+        self.NUM_CLASSES = 7
+        self.EMBED_DIM = 512
+        self.WINDOW_SIZE = 7
+        self.BKBONE_LR = 1e-5
+        self.TEMP_LR = 1e-3
+
+        # Experiment
+        self.EXP_NAME = "swin_mamba_experiment"
+
+    def __repr__(self): #print reports
+            lines = ["\n===== Experiment Configuration ====="]
+            for k, v in self.__dict__.items():
+                lines.append(f"{k}: {v}")
+            return "\n".join(lines)
+
+cfg = Config()
+'''
 from types import SimpleNamespace
 
 # Primary config values (dataset, model, training)
@@ -778,18 +808,44 @@ cfg = SimpleNamespace(
     # Experiment
     EXP_NAME="swin_mamba_experiment",
 )
+'''
 # -------------------------------
 # Main Training Loop
 # -------------------------------
+from config import cfg
+
 
 def main():
 
-    # Load runtime config from `config.py`
     from config import cfg
 
+    # -------------------------------
+    # Reproducibility
+    # -------------------------------
+    import random
+    import numpy as np
+    def set_seed(seed=42):
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        np.random.seed(seed)
+        random.seed(seed)
+
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    set_seed(42)
+
+    # -------------------------------
+    # Device
+    # -------------------------------
     use_gpu = True   # change to False when you want CPU
     device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
     print(device)
+
+    
+    print(cfg)   # print experiment configuration
 
     dataset = CASME2Dataset(
         root=cfg.DATA_ROOT,
@@ -812,12 +868,18 @@ def main():
     weights = 1.0 / (class_counts.float() + 1e-6)
     weights = weights / weights.sum() * len(class_counts)
 
-    train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
+    #train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
+    generator = torch.Generator().manual_seed(42) # ensure reproducible splits
+    train_set, val_set, test_set = random_split(
+    dataset,
+    [train_len, val_len, test_len],
+    generator=generator
+)
     
     # Create DataLoaders
-    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False)
-    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,num_workers=0) # ,num_workers=0 for exact order
+    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,num_workers=0)
+    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,num_workers=0)
     
 
     #model = VideoSwinMamba(num_classes=7).to(device)
@@ -828,7 +890,7 @@ def main():
     #criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam([
     {"params": model.backbone.parameters(), "lr": cfg.BKBONE_LR},
-    {"params": model.temporal.parameters(), "lr": cfg.TEMP_LTR},
+    {"params": model.temporal.parameters(), "lr": cfg.TEMP_LR},
 ])
     #  gradually lowers the learning rate
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
@@ -864,6 +926,7 @@ def main():
                 "train_acc",
                 "val_acc"
             ])
+
 
     start= time.time()
      #training loop
