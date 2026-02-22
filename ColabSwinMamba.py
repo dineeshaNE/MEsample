@@ -17,11 +17,16 @@ from torch.utils.data import Dataset
 
 from torchvision import transforms
 
+# Import metrics and time
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import StratifiedShuffleSplit
+import time
 
 # Suppress the UndefinedMetricWarning
 #warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.metrics._classification')
+
+# Load runtime config from `config.py`
+from config import cfg
 
 
 #--------------------------
@@ -29,7 +34,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 #--------------------------
 
 class CASME2Dataset(Dataset):
-    def __init__(self, root, annotation_file, transform=None, T=30, limit=None):
+    def __init__(self, root, annotation_file, transform=None, T=32, limit=None):
         self.root = root
         #self.ann = pd.read_excel(annotation_file)
         self.transform = transform
@@ -37,10 +42,8 @@ class CASME2Dataset(Dataset):
 
         if annotation_file.endswith(".csv"):
             self.ann = pd.read_csv(annotation_file)
-        #elif annotation_file.endswith(".xlsx"):
-            #self.ann = pd.read_excel(annotation_file)
         else:
-            raise ValueError("Annotation file must be .csv or .xlsx")
+            raise ValueError("Annotation file must be .csv")
 
         #print(self.ann.columns)
 
@@ -476,30 +479,9 @@ class TemporalSelectiveTrueMamba(nn.Module):
         y = self.dropout(y)      
 
         #return self.out_proj(y)
-        return x + self.out_proj(y)
+        return x + y
     
-# -------------------------------
-# Temporal Mamba
-#-------------------------------
 
-class TemporalMamba(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.mamba = Mamba(dim)
-        #self.mamba = TemporalSelectiveMamba(dim)
-
-    def forward(self, x):
-        # x: (B, T, C)
-        x = self.norm(x)
-        #x = self.mamba(x)
-        y_fwd = self.mamba(x)
-        y_bwd = self.mamba(torch.flip(x, dims=[1]))
-        y_bwd = torch.flip(y_bwd, dims=[1])
-
-        return self.alpha * y_fwd + (1 - self.alpha) * y_bwd
-        #return x
-    
 # -------------------------------
 # Bidirectional Temporal Mamba
 #-------------------------------    
@@ -649,10 +631,22 @@ class VideoSwinMamba(nn.Module):
         B, T, C, H, W = x.shape
 
         feats = []
+        '''        
+        x = x.view(B*T, C, H, W)
         for t in range(T):
             f = self.backbone(x[:, t])   # (B, 512)
             feats.append(f)
+
         feats = torch.stack(feats, dim=1)  # (B, T, 512)
+        feats = feats.view(B, T, -1)
+        '''
+            
+            # Flatten temporal dimension
+        x = x.reshape(B * T, C, H, W)
+        feats = self.backbone(x)
+        #x = x.reshape(B * T, C, H, W)
+        feats = feats.reshape(B, T, -1)   # (B, T, 512)
+       
         feats = self.temporal(feats)       # Temporal MER modeling
         return self.classifier(feats.mean(dim=1))
 
@@ -687,24 +681,88 @@ val_transforms = transforms.Compose([
 ])
 
 # -------------------------------
+# SwOSMBTM for MER
+# -------------------------------
+
+class SwOSMBTM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.T = cfg.NUM_FRAMES
+        self.num_classes =  cfg.NUM_CLASSES
+
+        # Spatial Mamba (orthogonal scans)
+        # Bidirectional temporal SSM
+        self.backbone = SwinMamba(in_ch=3, out_dim=512)
+        self.temporal = BidirectionalTemporalMamba(512) #TemporalMamba(512)
+        self.classifier = nn.Linear(512, self.num_classes)
+
+
+    def forward(self, x):
+        B = x.size(0)
+        T = self.T
+        # x: (B, T, C, H, W)
+        B, T, C, H, W = x.shape
+
+        feats = []
+
+            
+            # Flatten temporal dimension
+        x = x.reshape(B * T, C, H, W)
+        feats = self.backbone(x)
+        #x = x.reshape(B * T, C, H, W)
+        feats = feats.reshape(B, T, -1)   # (B, T, 512)
+       
+        feats = self.temporal(feats)       # Temporal MER modeling
+        return self.classifier(feats.mean(dim=1))
+
+
+
+mytransforms = transforms.Compose([
+
+    # 1️⃣ Resize all faces to a fixed size
+    transforms.ToPILImage(),
+    transforms.Resize((224, 224)),
+
+    # 2️⃣ Convert to grayscale (optional but strongly recommended for MER)
+    transforms.Grayscale(num_output_channels=3),
+
+    # 3️⃣ Data normalization
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std =[0.229, 0.224, 0.225]
+    ),
+
+    # 4️⃣ Micro-expression friendly augmentation (training only)
+    transforms.RandomHorizontalFlip(p=0.5),
+])
+
+val_transforms = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((224, 224)),
+    transforms.Grayscale(num_output_channels=3),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485]*3, [0.229]*3),
+])
+# -------------------------------
 # Main Training Loop
 # -------------------------------
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_gpu = True   # change to False when you want CPU
+    device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
+    print(device)
 
-    #dataset = ToySequenceDataset()
     dataset = CASME2Dataset(
-    root="CASME2/raw",
-    annotation_file="CASME2/CASME2.csv",
-    transform=mytransforms,
-    T=30 #,
-    #limit = 20
-)
-  
+        root=cfg.DATA_ROOT,
+        annotation_file=cfg.ANNOTATION_FILE,
+        transform=mytransforms,
+        T=cfg.NUM_FRAMES,
+        limit=cfg.LIMIT
+    )
     N = len(dataset)
-    train_len = int(0.7 * N)
-    val_len   = int(0.15 * N)
+    train_len = int(cfg.TRAIN_SPLIT * N)
+    val_len   = int(cfg.VAL_SPLIT * N)
     test_len  = N - train_len - val_len
 
     # Handle class imbalance with weighted loss - higher weight to minority classes
@@ -719,19 +777,20 @@ def main():
     train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
     
     # Create DataLoaders
-    train_loader = DataLoader(train_set, batch_size=8, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=8, shuffle=False)
-    test_loader = DataLoader(test_set, batch_size=8, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False)
     
 
-    model = VideoSwinMamba(num_classes=7).to(device)
+    #model = VideoSwinMamba(num_classes=7).to(device)
+    model = SwOSMBTM().to(device)
 
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
     
-    criterion = nn.CrossEntropyLoss()
+    #criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam([
-    {"params": model.backbone.parameters(), "lr": 1e-5},
-    {"params": model.temporal.parameters(), "lr": 1e-3}
+    {"params": model.backbone.parameters(), "lr": cfg.BKBONE_LR},
+    {"params": model.temporal.parameters(), "lr": cfg.TEMP_LTR},
 ])
     #  gradually lowers the learning rate
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
@@ -739,12 +798,7 @@ def main():
 
 
     print("Model and components initialized.")
-    '''
-    # print class distribution in train and val sets
-    from collections import Counter
-    print("Train:", Counter([labels[i] for i in train_idx]))
-    print("Val:",   Counter([labels[i] for i in val_idx]))
-    '''
+
     best_val_acc = 0.0
     best_epoch = 0
 
@@ -773,7 +827,7 @@ def main():
                 "val_acc"
             ])
 
-
+    start= time.time()
      #training loop
     for epoch in range(2):
       # ========== TRAIN ==========
@@ -802,7 +856,9 @@ def main():
             print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
       train_acc = 100 * train_correct / train_total
       train_loss /= len(train_loader)
-      
+      end = time.time()
+      print("Time:", end - start)
+
 
       # ========== VALIDATE ==========
       model.eval()
@@ -901,7 +957,6 @@ def main():
 
     print("📁 Saved: classification_report.csv & confusion_matrix.csv")
 
-\
     print("✅ Experiment finished")
 
 
