@@ -19,6 +19,7 @@ pip-wheel-metadata/
 CASME2/
 *.zip
 *.csv
+*.txt
 
 
 # Editor and IDE
@@ -46,6 +47,7 @@ outputs/
 models/
 CASME2/
 CASME2/raw/**/*.jpg
+experiments/
 
 # Notebook checkpoints
 .ipynb_checkpoints/

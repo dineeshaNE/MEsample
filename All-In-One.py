@@ -2,6 +2,7 @@
 # ColabSwinMamba
 #--------------------------
 
+from datetime import datetime
 from pyexpat import model
 import torch, torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -21,6 +22,7 @@ from torchvision import transforms
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import StratifiedShuffleSplit
 import time
+
 
 # Suppress the UndefinedMetricWarning
 #warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.metrics._classification')
@@ -744,7 +746,7 @@ val_transforms = transforms.Compose([
 ])
 
 #------------------------------------
-# Central config for ColabSwinMamba.
+# Central config.py
 #-----------------------------------
 class Config:
     def __init__(self):
@@ -803,27 +805,103 @@ cfg = SimpleNamespace(
     EMBED_DIM=512,
     WINDOW_SIZE=7,
     BKBONE_LR=1e-5,           # learning rate for backbone (if using pretrained)
-    TEMP_LTR=1e-3,             # learning rate for temporal module
+    TEMP_LR=1e-3,             # learning rate for temporal module
 
     # Experiment
     EXP_NAME="swin_mamba_experiment",
 )
 '''
-# -------------------------------
-# Main Training Loop
-# -------------------------------
-from config import cfg
 
+# ======================================
+#  Utility Functions
+# ======================================
+
+#-------------------------------
+#  Experiment folder management - create unique folder for each run
+#-------------------------------
+def create_experiment_folder(base_dir="experiments"):
+    os.makedirs(base_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    exp_name = f"SwOSMBTM_lr{cfg.LR}_{timestamp}"
+    exp_dir = os.path.join(base_dir, f"exp_{exp_name}" )
+    
+
+    os.makedirs(exp_dir, exist_ok=True)
+    return exp_dir
+
+#-------------------------------
+# Save config to experiment folder for reproducibility
+#-------------------------------
+def save_config(cfg, exp_dir):
+    config_path = os.path.join(exp_dir, "config.txt")
+    with open(config_path, "w") as f:
+        for key, value in vars(cfg).items():
+            f.write(f"{key}: {value}\n")
+
+#-------------------------------
+# Checkpointing - save latest and best models
+#-------------------------------
+def save_checkpoint(model, optimizer, epoch, exp_dir, is_best=False):
+
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+    }
+
+    # Save latest model
+    torch.save(checkpoint, os.path.join(exp_dir, "model.pth"))
+
+    # Save best model separately
+    if is_best:
+        torch.save(checkpoint, os.path.join(exp_dir, "best_model.pth"))
+
+#--------------------------------
+# Save training log to centralized CSV files (root level)
+#-------------------------------
+def save_training_log(log, epoch, train_loss, val_loss, train_acc, val_acc, exp_dir):
+
+    # Extract experiment name from exp_dir path
+    exp_name = os.path.basename(exp_dir)
+    
+    # Save full log as DataFrame
+    log_df = pd.DataFrame(log, columns=[
+        "epoch", "train_loss", "train_acc", "val_loss", "val_acc"
+    ])
+    log_df.to_csv("training_log.csv", index=False)
+
+    # Append current epoch to centralized experiment log
+    log_path = "experiment_log.csv"
+    
+    # Create log file header if it doesn't exist
+    if not os.path.exists(log_path):
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "train_loss", "val_loss", "train_acc", "val_acc"])
+    
+    with open(log_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            epoch + 1,
+            round(train_loss, 5),
+            round(val_loss, 5),
+            round(train_acc, 4),
+            round(val_acc, 4)
+        ])
+
+# ============================================================================
+# Main training and evaluation loop
+# ============================================================================
 
 def main():
-
-    from config import cfg
 
     # -------------------------------
     # Reproducibility
     # -------------------------------
     import random
     import numpy as np
+
     def set_seed(seed=42):
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
@@ -844,9 +922,12 @@ def main():
     device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
     print(device)
 
-    
-    print(cfg)   # print experiment configuration
+    #from config import cfg
+    #print(cfg)   # print experiment configuration
 
+    #---------------
+    # Load dataset and create splits
+    #--------------
     dataset = CASME2Dataset(
         root=cfg.DATA_ROOT,
         annotation_file=cfg.ANNOTATION_FILE,
@@ -859,51 +940,60 @@ def main():
     val_len   = int(cfg.VAL_SPLIT * N)
     test_len  = N - train_len - val_len
 
+    #------------------
     # Handle class imbalance with weighted loss - higher weight to minority classes
-    labels = dataset.ann['Estimated Emotion'].str.lower().map(dataset.label_map).values
-    #class_counts = torch.bincount(torch.tensor(labels))
-    
+    #-------------
+    labels = dataset.ann['Estimated Emotion'].str.lower().map(dataset.label_map).values 
     class_counts = torch.bincount(torch.tensor(labels), minlength=7)
 
     weights = 1.0 / (class_counts.float() + 1e-6)
     weights = weights / weights.sum() * len(class_counts)
 
-    #train_set, val_set, test_set = random_split(dataset, [train_len, val_len, test_len])
-    generator = torch.Generator().manual_seed(42) # ensure reproducible splits
+    #---------------
+    # # ensure reproducible splits
+    #-----------------------
+    generator = torch.Generator().manual_seed(42) 
     train_set, val_set, test_set = random_split(
-    dataset,
-    [train_len, val_len, test_len],
-    generator=generator
-)
+        dataset,
+        [train_len, val_len, test_len],
+        generator=generator
+    )
     
-    # Create DataLoaders
-    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,num_workers=0) # ,num_workers=0 for exact order
-    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,num_workers=0)
-    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,num_workers=0)
+    #-------------------
+    # Create DataLoaders reproducible in the same order with fixed seed and shuffle for training
+    #-------------
+    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=2,
+    pin_memory=True) 
+    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=2,
+    pin_memory=True)
+    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=2,
+    pin_memory=True)
     
-
-    #model = VideoSwinMamba(num_classes=7).to(device)
+    #-------------
+    # model and training components
+    #-------------------
     model = SwOSMBTM().to(device)
 
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
-    
-    #criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam([
-    {"params": model.backbone.parameters(), "lr": cfg.BKBONE_LR},
-    {"params": model.temporal.parameters(), "lr": cfg.TEMP_LR},
-])
-    #  gradually lowers the learning rate
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
-    #scheduler.step(goes after Optimizer step) 
 
+    optimizer = torch.optim.Adam([
+        {"params": model.backbone.parameters(), "lr": cfg.BKBONE_LR},
+        {"params": model.temporal.parameters(), "lr": cfg.TEMP_LR},
+    ])
+    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)#  gradually lowers the learning rate
 
     print("Model and components initialized.")
 
+    #-------------------------------
+    #
+    #-----------------------------
+
     best_val_acc = 0.0
     best_epoch = 0
-
-    # quick test run to verify dimensions
-    x, y = next(iter(train_loader))
+    log = []
+    
+    x, y = next(iter(train_loader))# quick test run to verify dimensions
     x = x.to(device)
 
     with torch.no_grad():
@@ -912,7 +1002,8 @@ def main():
     print("Input:", x.shape)
     print("Output:", out.shape)
 
-    log = []
+    '''
+    
 
     log_path = "experiment_log.csv"
 
@@ -926,16 +1017,27 @@ def main():
                 "train_acc",
                 "val_acc"
             ])
+    '''
 
+
+    # Create experiment folder
+    exp_dir = create_experiment_folder()
+    print("Experiment directory:", exp_dir)
+
+    save_config(cfg, exp_dir)
 
     start= time.time()
-     #training loop
-    for epoch in range(2):
-      # ========== TRAIN ==========
-      model.train()
-      train_loss, train_correct, train_total = 0, 0, 0
 
-      for x, y in train_loader:
+    #=====================================================================
+    # training loop
+    #====================================================================
+
+    for epoch in range(cfg.EPOCHS):
+      
+        model.train()
+        train_loss, train_correct, train_total = 0, 0, 0
+
+        for batch_idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
             logits = model(x)
             loss = criterion(logits, y)
@@ -954,69 +1056,75 @@ def main():
             train_total += y.size(0)
             train_loss += loss.item()
 
-            print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
-      train_acc = 100 * train_correct / train_total
-      train_loss /= len(train_loader)
-      end = time.time()
-      print("Time:", end - start)
+            if batch_idx % 10 == 0:
+                print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
 
+        train_acc = 100 * train_correct / train_total
+        train_loss /= len(train_loader)
+    
+        end = time.time()
+        print("Time:", end - start)
 
-      # ========== VALIDATE ==========
-      model.eval()
-      val_loss, val_correct, val_total = 0, 0, 0
+        #=============================
+        # Validate
+        #==================================
+        model.eval()
+        val_loss, val_correct, val_total = 0, 0, 0
 
-      with torch.no_grad():
-        for x, y in val_loader:
-            x, y = x.to(device), y.to(device)
-            logits = model(x)
-            loss = criterion(logits, y)
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                logits = model(x)
+                loss = criterion(logits, y)
 
-            val_loss += loss.item()
-            preds = logits.argmax(dim=1)
-            val_correct += (preds == y).sum().item()
-            val_total += y.size(0)
+                val_loss += loss.item()
+                preds = logits.argmax(dim=1)
+                val_correct += (preds == y).sum().item()
+                val_total += y.size(0)
 
-      val_acc = 100 * val_correct / val_total
-      val_loss /= len(val_loader)
+        val_acc = 100 * val_correct / val_total
+        val_loss /= len(val_loader)
 
+        #-----------------------------
+        # compute epoch metrics 
+        #---------------------------
 
-      # ===== compute epoch metrics =====
-
-      print(f"Epoch {epoch:02d} | "
+        print(f"Epoch {epoch:02d} | "
           f"Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | "
           f"Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%"
 )
-      log.append([epoch, train_loss, train_acc, val_loss, val_acc])
+        # ?????log.append([epoch, train_loss, train_acc, val_loss, val_acc])
       
-      scheduler.step()
+        scheduler.step() # update learning rate according to schedule
 
+        #-----------    
+        # freeze the best model
+        #-----------------
+      
+        is_best = val_acc > best_val_acc
 
-      # freeze the best model
-      # val accuracy not to overfit the model training acc → memorization, validation acc → generalization, test acc → final report
-      if val_acc > best_val_acc:
+        if is_best:
             best_val_acc = val_acc
-            best_epoch= epoch
-            torch.save(model.state_dict(), "best_model.pth")
+            best_epoch = epoch
+
+        save_checkpoint(
+            model,
+            optimizer,
+            epoch,
+            exp_dir,
+            is_best=is_best
+        )
+        # val accuracy not to overfit the model training acc → memorization, 
+        # validation acc → generalization, 
+        # test acc → final report
 
     print("Training & Validation step OK")
-    log_df = pd.DataFrame(log, columns=[
-    "epoch", "train_loss", "train_acc", "val_loss", "val_acc"
-])
 
-    log_df.to_csv("training_log.csv", index=False)
+    save_training_log(log, epoch, train_loss, val_loss, train_acc, val_acc, exp_dir)
 
-    with open(log_path, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            epoch + 1,
-            round(train_loss, 5),
-            round(val_loss, 5),
-            round(train_acc, 4),
-            round(val_acc, 4)
-        ])
-
-
-    # ========== TEST ==========
+    #=======================================
+    # TEST EVALUATION
+    #=========================================
     
     # reload the best model
 
@@ -1038,7 +1146,7 @@ def main():
             all_preds.extend(preds.cpu().numpy())
             all_gt.extend(y.cpu().numpy())
 
-#from sklearn.metrics import classification_report, confusion_matrix, f1_score
+    #from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
     test_acc = 100 * test_correct / test_total
     print(f"🧪 Final Test Accuracy: {test_acc:.2f}%")
@@ -1053,20 +1161,18 @@ def main():
     cm = confusion_matrix(all_gt, all_preds)
 
     pd.DataFrame(report).transpose().to_csv("classification_report.csv")
-
     pd.DataFrame(cm).to_csv("confusion_matrix.csv", index=False)
 
-    print("📁 Saved: classification_report.csv & confusion_matrix.csv")
+    print(" Saved: classification_report.csv & confusion_matrix.csv")
+    print(" Experiment finished")
 
-    print("✅ Experiment finished")
 
 
 if __name__ == "__main__":
-  import traceback
-try:
-    main()
-except Exception as e:
-    print("Exception in main:", repr(e))
-    traceback.print_exc()
-    raise
- 
+    import traceback
+    try:
+        main()
+    except Exception as e:
+        print("Exception in main:", repr(e))
+        traceback.print_exc()
+        raise 
