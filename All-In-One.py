@@ -1,5 +1,5 @@
 #--------------------------
-# ColabSwinMamba
+# All-in-One SwOSMBTM implementation for Micro-Expression Recognition (MER)
 #--------------------------
 
 from datetime import datetime
@@ -27,13 +27,254 @@ import time
 # Suppress the UndefinedMetricWarning
 #warnings.filterwarnings('ignore', category=UserWarning, module='sklearn.metrics._classification')
 
+#------------------------------------
+# Central config.py
+#-----------------------------------
+class Config:
+    def __init__(self):
+        # Dataset / IO
+        self.DATA_ROOT = "CASME2/raw"
+        self.ANNOTATION_FILE = "CASME2/CASME2.csv"
+        self.LIMIT = 8
+        self.NUM_FRAMES = 32
 
+        # Training
+        self.BATCH_SIZE = 4
+        self.LR = 1e-3
+        self.EPOCHS = 2
+        self.TRAIN_SPLIT = 0.7
+        self.VAL_SPLIT = 0.15
+        self.TEST_SPLIT = 0.15
 
+        # Model
+        self.NUM_CLASSES = 7
+        self.EMBED_DIM = 512
+        self.WINDOW_SIZE = 7
+        self.BKBONE_LR = 1e-5
+        self.TEMP_LR = 1e-3
+
+        # Experiment
+        self.EXP_NAME = "swin_mamba_experiment"
+
+    def __repr__(self): #print reports
+            lines = ["\n===== Experiment Configuration ====="]
+            for k, v in self.__dict__.items():
+                lines.append(f"{k}: {v}")
+            return "\n".join(lines)
+
+cfg = Config()
+
+#--------------------------
+# Face Alignment using RetinaFace (important for MER)
+#--------------------------
+
+'''
+
+try:
+    from retinaface import RetinaFace
+    RETINAFACE_AVAILABLE = True
+except ImportError:
+    RETINAFACE_AVAILABLE = False
+    print("Warning: retinaface not installed. Face alignment will be skipped.")
+
+class FaceAligner:
+    def __init__(self, output_size=224):
+        self.output_size = output_size
+
+    def align(self, img):
+        if not RETINAFACE_AVAILABLE:
+            return img  # fallback when retinaface not available
+            
+        faces = RetinaFace.detect_faces(img)
+
+        if faces is None:
+            return img  # fallback (important for MER)
+
+        # Take first detected face
+        key = list(faces.keys())[0]
+        landmarks = faces[key]["landmarks"]
+
+        left_eye = landmarks["left_eye"]
+        right_eye = landmarks["right_eye"]
+
+        return self._align_eyes(img, left_eye, right_eye)
+
+    def _align_eyes(self, img, left_eye, right_eye):
+        left_eye = np.array(left_eye)
+        right_eye = np.array(right_eye)
+
+        # Compute angle
+        dy = right_eye[1] - left_eye[1]
+        dx = right_eye[0] - left_eye[0]
+        angle = np.degrees(np.arctan2(dy, dx))
+
+        # Eye center
+        eyes_center = (
+            int((left_eye[0] + right_eye[0]) // 2),
+            int((left_eye[1] + right_eye[1]) // 2),
+        )
+
+        # Rotate
+        M = cv2.getRotationMatrix2D(eyes_center, angle, 1.0)
+        aligned = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+
+        return aligned
+        '''
 
 #--------------------------
 # CASME2 Dataset    
 #--------------------------
+import face_alignment
+import numpy as np
 
+class CASME2DatasetFA(Dataset):
+    def __init__(self, root, annotation_file, transform=None, T=32, limit=None):
+        self.root = root
+        #self.ann = pd.read_excel(annotation_file)
+        self.transform = transform
+        self.T = T
+
+        self.fa = face_alignment.FaceAlignment(
+            face_alignment.LandmarksType.TWO_D,
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+
+        # Directory to store alignment matrices
+        self.cache_dir = os.path.join(self.root, "alignment_cache")
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        if annotation_file.endswith(".csv"):
+            self.ann = pd.read_csv(annotation_file)
+        else:
+            raise ValueError("Annotation file must be .csv")
+
+        #print(self.ann.columns)
+
+        if limit is not None:
+            self.ann = self.ann.iloc[:limit].reset_index(drop=True)
+
+        self.label_map = {
+            'happiness': 0,
+            'disgust': 1,
+            'surprise': 2,
+            'repression': 3,
+            'fear': 4,
+            'sadness': 5,
+            'others': 6
+        }
+    def get_cache_path(self, subject, video):
+        subject = f"sub{int(subject):02d}"
+        filename = f"{subject}_{video}.npy"
+        return os.path.join(self.cache_dir, filename)
+
+    def compute_alignment_matrix(self, img):
+        landmarks = self.fa.get_landmarks(img)
+
+        if landmarks is None:
+            return None
+
+        lm = landmarks[0]
+
+        # Eye centers (68-point model)
+        left_eye = lm[36:42].mean(axis=0)
+        right_eye = lm[42:48].mean(axis=0)
+
+        dy = right_eye[1] - left_eye[1]
+        dx = right_eye[0] - left_eye[0]
+        angle = np.degrees(np.arctan2(dy, dx))
+
+        eyes_center = tuple(((left_eye + right_eye) / 2).astype(int))
+
+        M = cv2.getRotationMatrix2D(eyes_center, angle, 1.0)
+
+        return M
+
+    def _format_subject(self, subject):
+        return f"sub{int(subject):02d}"
+
+    def __len__(self):
+        return len(self.ann)
+
+    def __getitem__(self, idx):
+        row = self.ann.iloc[idx]
+        #print  (f"Processing row {idx}")
+        #print(f"Processing row {idx}: {row.to_dict()}")
+
+        subject = row['Subject']
+        video = row['Filename']
+
+        cache_path = self.get_cache_path(subject, video)
+
+        # 🔵 Try loading cached matrix
+        if os.path.exists(cache_path):
+            M = np.load(cache_path)
+        else:
+            M = None
+
+        #label = int(row['Label'])
+        emotion = row['Estimated Emotion'].strip().lower()
+        label = self.label_map[emotion]
+        if emotion not in self.label_map:
+            raise ValueError(f"Unknown emotion: {emotion}")
+
+
+        #subject = self._format_subject(subject)
+        clip_dir = os.path.join(self.root, f"sub{int(subject):02d}", video)
+        frames = sorted(os.listdir(clip_dir))
+
+        images = []
+        for i, f in enumerate(frames):
+            img = cv2.imread(os.path.join(clip_dir, f))
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            #  Compute only once per clip
+            if i == 0 and M is None:
+                M = self.compute_alignment_matrix(img)
+
+                if M is None:
+                    # Fallback (identity transform)
+                    M = np.eye(2, 3, dtype=np.float32)
+
+                # 💾 Save permanently
+                np.save(cache_path, M)
+
+            # 🔵 Apply alignment
+            img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+
+            if self.transform:
+                img = self.transform(img) #(3, 224, 224)
+            images.append(img)
+
+        x = torch.stack(images)   # (T, C, H,  W)
+        #print(f"Frames done: {clip_dir}")
+
+        # Compute simple motion magnitude  for strong, learnable temporal signature
+        diffs = (x[1:] - x[:-1]).abs().mean(dim=(1,2,3)) #peaks near the apex
+        scores = torch.cat([diffs[:1], diffs])  # align length
+
+        # Normalize
+        scores = scores / (scores.sum() + 1e-6) # avoid div by zero in no motion clips
+
+
+        # Weighted temporal sampling
+        indices = torch.multinomial(scores, self.T, replacement=True)
+        indices = torch.sort(indices).values
+        x = x[indices]
+
+
+        # Temporal normalization for robust batch processing
+
+
+        if x.shape[0] < self.T:
+            pad = self.T - x.shape[0]
+            x = torch.cat([x, x[-1:].repeat(pad,1,1,1)])
+
+
+        return x, label
+
+#---------------------------------
+#Dataset face Aligned
+#----------------------------------
 class CASME2Dataset(Dataset):
     def __init__(self, root, annotation_file, transform=None, T=32, limit=None):
         self.root = root
@@ -570,7 +811,6 @@ class SwinMambaStage(nn.Module):
 
 # -------------------------------
 # Full Backbone
-#
 # -------------------------------
 class SwinMamba(nn.Module):
     def __init__(self, in_ch=3, out_dim=512):
@@ -642,7 +882,7 @@ class VideoSwinMamba(nn.Module):
         feats = feats.view(B, T, -1)
         '''
             
-            # Flatten temporal dimension
+        # Flatten temporal dimension
         x = x.reshape(B * T, C, H, W)
         feats = self.backbone(x)
         #x = x.reshape(B * T, C, H, W)
@@ -653,33 +893,7 @@ class VideoSwinMamba(nn.Module):
 
 
 
-mytransforms = transforms.Compose([
 
-    # 1️⃣ Resize all faces to a fixed size
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-
-    # 2️⃣ Convert to grayscale (optional but strongly recommended for MER)
-    transforms.Grayscale(num_output_channels=3),
-
-    # 3️⃣ Data normalization
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std =[0.229, 0.224, 0.225]
-    ),
-
-    # 4️⃣ Micro-expression friendly augmentation (training only)
-    transforms.RandomHorizontalFlip(p=0.5),
-])
-
-val_transforms = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-    transforms.Grayscale(num_output_channels=3),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485]*3, [0.229]*3),
-])
 
 # -------------------------------
 # SwOSMBTM for MER
@@ -715,7 +929,9 @@ class SwOSMBTM(nn.Module):
 
         return self.classifier(feats.mean(dim=1))
 
-
+#--------------------------------
+# Centralized transforms for all datasets (can be extended to multiple datasets with different transforms)
+#--------------------------------
 
 mytransforms = transforms.Compose([
 
@@ -724,9 +940,9 @@ mytransforms = transforms.Compose([
     transforms.Resize((224, 224)),
 
     # 2️⃣ Convert to grayscale (optional but strongly recommended for MER)
-    transforms.Grayscale(num_output_channels=3),
+    transforms.Grayscale(num_output_channels=3), # keep 3 channels for pretrained backbones, but all contain the same grayscale info
 
-    # 3️⃣ Data normalization
+    # 3️⃣ Data normalization  (using ImageNet stats as a common practice for pretrained backbones)
     transforms.ToTensor(),
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -745,72 +961,8 @@ val_transforms = transforms.Compose([
     transforms.Normalize([0.485]*3, [0.229]*3),
 ])
 
-#------------------------------------
-# Central config.py
-#-----------------------------------
-class Config:
-    def __init__(self):
-        # Dataset / IO
-        self.DATA_ROOT = "CASME2/raw"
-        self.ANNOTATION_FILE = "CASME2/CASME2.csv"
-        self.LIMIT = 20
-        self.NUM_FRAMES = 30
 
-        # Training
-        self.BATCH_SIZE = 8
-        self.LR = 1e-3
-        self.EPOCHS = 2
-        self.TRAIN_SPLIT = 0.7
-        self.VAL_SPLIT = 0.15
-        self.TEST_SPLIT = 0.15
 
-        # Model
-        self.NUM_CLASSES = 7
-        self.EMBED_DIM = 512
-        self.WINDOW_SIZE = 7
-        self.BKBONE_LR = 1e-5
-        self.TEMP_LR = 1e-3
-
-        # Experiment
-        self.EXP_NAME = "swin_mamba_experiment"
-
-    def __repr__(self): #print reports
-            lines = ["\n===== Experiment Configuration ====="]
-            for k, v in self.__dict__.items():
-                lines.append(f"{k}: {v}")
-            return "\n".join(lines)
-
-cfg = Config()
-'''
-from types import SimpleNamespace
-
-# Primary config values (dataset, model, training)
-cfg = SimpleNamespace(
-    # Dataset / IO
-    DATA_ROOT="CASME2/raw",
-    ANNOTATION_FILE="CASME2/CASME2.csv",
-    LIMIT=None,                # set to int for quick debug runs (e.g. 2)
-    NUM_FRAMES=30,
-
-    # DataLoader / training
-    BATCH_SIZE=8,
-    LR=1e-3,
-    EPOCHS=50,
-    TRAIN_SPLIT=0.7,           # proportion of data for training
-    VAL_SPLIT=0.15,            # proportion of data for validation
-    TEST_SPLIT=0.15,           # proportion of data for testing
-
-    # Model
-    NUM_CLASSES=7,
-    EMBED_DIM=512,
-    WINDOW_SIZE=7,
-    BKBONE_LR=1e-5,           # learning rate for backbone (if using pretrained)
-    TEMP_LR=1e-3,             # learning rate for temporal module
-
-    # Experiment
-    EXP_NAME="swin_mamba_experiment",
-)
-'''
 
 # ======================================
 #  Utility Functions
@@ -891,6 +1043,75 @@ def save_training_log(log, epoch, train_loss, val_loss, train_acc, val_acc, exp_
         ])
 
 # ============================================================================
+# Checkpoint Loading with Parameter Migration
+# ============================================================================
+
+def load_checkpoint_with_migration(model, checkpoint_path, device):
+    """
+    Load checkpoint and handle parameter name migration from old to new SSM format.
+    
+    Old format (temporal): temporal.ssm.A, temporal.ssm.B, temporal.ssm.C, temporal.ssm.D
+    New format (temporal): temporal.ssm.A_log, temporal.ssm.in_proj, temporal.ssm.dwconv, temporal.ssm.out_proj
+    
+    Spatial mamba and backbone parameters remain unchanged and will be preserved.
+    """
+    import os
+    
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint {checkpoint_path} not found. Proceeding with random initialization.")
+        return model
+    
+    try:
+        checkpoint = torch.load(checkpoint_path, weights_only=True, map_location=device)
+        
+        # Handle both old format (with epoch/optimizer) and new format (direct state_dict)
+        if "model_state_dict" in checkpoint:
+            print(f"Loading checkpoint from wrapped format (epoch {checkpoint.get('epoch', 'unknown')})")
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+        
+        print(f"Checkpoint has {len(state_dict)} model parameters")
+        
+        # Check if we need to migrate temporal parameters
+        has_old_temporal = any(k in state_dict for k in ["temporal.ssm.A", "temporal.ssm.B", "temporal.ssm.C", "temporal.ssm.D"])
+        has_new_temporal = any(k in state_dict for k in ["temporal.ssm.A_log", "temporal.ssm.in_proj.weight"])
+        
+        if has_old_temporal and not has_new_temporal:
+            print("\n[MIGRATE] Detected old temporal SSM format. Migrating parameters...")
+            
+            # Count and remove old temporal incompatible parameters
+            old_temporal_keys = [k for k in state_dict.keys() if k.startswith("temporal.ssm.") and k.split(".")[-1] in ["A", "B", "C", "D"]]
+            
+            print(f"  Found {len(old_temporal_keys)} old temporal parameters:")
+            for key in old_temporal_keys:
+                print(f"    - Removing: {key}")
+                del state_dict[key]
+            
+            # Spatial mamba and backbone should still be compatible
+            spatial_keys = [k for k in state_dict.keys() if "spatial_mamba" in k]
+            backbone_keys = [k for k in state_dict.keys() if "backbone" in k]
+            
+            print(f"\n  Preserving {len(spatial_keys)} spatial mamba parameters [OK]")
+            print(f"  Preserving {len(backbone_keys)} backbone parameters [OK]")
+            
+            print("\nLoading checkpoint with strict=False to allow temporal SSM reinitialization...")
+            model.load_state_dict(state_dict, strict=False)
+            print("[OK] Checkpoint loaded successfully! Temporal SSM will be retrained.")
+            
+        else:
+            # Normal loading
+            model.load_state_dict(state_dict)
+            print("[OK] Checkpoint loaded successfully (no migration needed).")
+            
+        return model
+        
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"\n[ERROR] Error loading checkpoint: {e}")
+        print("Proceeding with random initialization.")
+        return model
+
+# ============================================================================
 # Main training and evaluation loop
 # ============================================================================
 
@@ -962,11 +1183,11 @@ def main():
     #-------------------
     # Create DataLoaders reproducible in the same order with fixed seed and shuffle for training
     #-------------
-    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=2,
-    pin_memory=True) 
-    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=2,
+    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=0,
+    pin_memory=True) # num_workers=0 for debugging otherwissen2nfor GPU
+    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=0,
     pin_memory=True)
-    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=2,
+    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=0,
     pin_memory=True)
     
     #-------------
@@ -995,6 +1216,7 @@ def main():
     
     x, y = next(iter(train_loader))# quick test run to verify dimensions
     x = x.to(device)
+    y = y.to(device)
 
     with torch.no_grad():
       out = model(x)
@@ -1002,27 +1224,12 @@ def main():
     print("Input:", x.shape)
     print("Output:", out.shape)
 
-    '''
-    
-
-    log_path = "experiment_log.csv"
-
-    if not os.path.exists(log_path):
-        with open(log_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "epoch",
-                "train_loss",
-                "val_loss",
-                "train_acc",
-                "val_acc"
-            ])
-    '''
-
-
     # Create experiment folder
     exp_dir = create_experiment_folder()
     print("Experiment directory:", exp_dir)
+
+    best_val_acc = float('-inf')
+    best_epoch = -1
 
     save_config(cfg, exp_dir)
 
@@ -1037,11 +1244,18 @@ def main():
         model.train()
         train_loss, train_correct, train_total = 0, 0, 0
 
-        for batch_idx, (x, y) in enumerate(train_loader):
-            x, y = x.to(device), y.to(device)
+        for x, y in train_loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            '''
+            for batch_idx, (x, y) in enumerate(train_loader):
+                x, y = x.to(device), y.to(device)
+            '''
+            #-------------------
+            # Forward pass, loss, backward, optimize
+            #-------------------
             logits = model(x)
             loss = criterion(logits, y)
-
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # avoid exploding gradients
@@ -1051,19 +1265,21 @@ def main():
             preds = logits.argmax(dim=1)
             batch_acc = (preds == y).float().mean()
 
+            #------------------------
             # accumulate for epoch
+            #-------------------
             train_correct += (preds == y).sum().item()
             train_total += y.size(0)
             train_loss += loss.item()
 
-            if batch_idx % 10 == 0:
-                print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
+            #if batch_idx % 10 == 0:
+            print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
 
         train_acc = 100 * train_correct / train_total
         train_loss /= len(train_loader)
     
-        end = time.time()
-        print("Time:", end - start)
+        Tend = time.time()
+        print("Traing Time:", Tend - start)
 
         #=============================
         # Validate
@@ -1093,7 +1309,7 @@ def main():
           f"Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | "
           f"Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%"
 )
-        # ?????log.append([epoch, train_loss, train_acc, val_loss, val_acc])
+        log.append([epoch, train_loss, train_acc, val_loss, val_acc])
       
         scheduler.step() # update learning rate according to schedule
 
@@ -1126,10 +1342,11 @@ def main():
     # TEST EVALUATION
     #=========================================
     
-    # reload the best model
-
-    model.load_state_dict(torch.load("best_model.pth", weights_only=True))
+    # reload the best model from experiment directory
+    best_model_path = os.path.join(exp_dir, "best_model.pth")
+    load_checkpoint_with_migration(model, best_model_path, device)
     model.eval()
+
 
     test_correct, test_total = 0, 0
     all_preds = []
@@ -1139,6 +1356,7 @@ def main():
         for x, y in test_loader:
             x, y = x.to(device), y.to(device)
             logits = model(x)
+
             preds = logits.argmax(dim=1)
             test_correct += (preds == y).sum().item()
             test_total += y.size(0)
@@ -1149,21 +1367,34 @@ def main():
     #from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
     test_acc = 100 * test_correct / test_total
-    print(f"🧪 Final Test Accuracy: {test_acc:.2f}%")
+    print(f"[TEST] Final Test Accuracy: {test_acc:.2f}%")
 
+    #------------------------------
+    # - Save evaluation results ----------
+    #---------------
+    report = classification_report(
+        all_gt, all_preds,
+        digits=4,
+        output_dict=True,
+        zero_division=0
+    )
 
-    print(classification_report(all_gt, all_preds, digits=4, zero_division=0))
-    print("Micro-F1:", f1_score(all_gt, all_preds, average='micro', zero_division=0))
-    print("Confusion Matrix:\n", confusion_matrix(all_gt, all_preds))
-
-    # ---------- Save evaluation results ----------
-    report = classification_report(all_gt, all_preds, digits=4, output_dict=True, zero_division=0)
     cm = confusion_matrix(all_gt, all_preds)
 
-    pd.DataFrame(report).transpose().to_csv("classification_report.csv")
-    pd.DataFrame(cm).to_csv("confusion_matrix.csv", index=False)
+    pd.DataFrame(report).transpose().to_csv(
+        os.path.join(exp_dir, "classification_report.csv")
+    )
 
-    print(" Saved: classification_report.csv & confusion_matrix.csv")
+    pd.DataFrame(cm).to_csv(
+        os.path.join(exp_dir, "confusion_matrix.csv"),
+        index=False
+    )
+
+    with open(os.path.join(exp_dir, "summary.txt"), "w") as f:
+        f.write(f"Final Test Accuracy: {exp_dir} {test_acc:.4f}\n")
+        f.write(f"Micro-F1: {f1_score(all_gt, all_preds, average='micro', zero_division=0):.4f}\n")
+
+    #print(" Saved: classification_report.csv & confusion_matrix.csv")
     print(" Experiment finished")
 
 
