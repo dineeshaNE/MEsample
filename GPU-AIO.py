@@ -36,8 +36,8 @@ from torch.amp import autocast, GradScaler
 class Config:
     def __init__(self):
         # Dataset / IO
-        self.DATA_ROOT = "collection/raw"
-        self.ANNOTATION_FILE = "collection/CASME2.csv"
+        self.DATA_ROOT = "CASME2/raw"
+        self.ANNOTATION_FILE = "CASME2/CASME2.csv"
         self.LIMIT = None
         self.NUM_FRAMES = 16
         self.BATCH_SIZE = 4
@@ -121,6 +121,7 @@ class CASME2DatasetFA(Dataset):
         self.transform = transform
         self.T = T
 
+         
         self.fa = face_alignment.FaceAlignment(
             face_alignment.LandmarksType.TWO_D,
             device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -131,6 +132,7 @@ class CASME2DatasetFA(Dataset):
         self.cache_dir = os.path.join(self.root, "alignment_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
 
+                
         if annotation_file.endswith(".csv"):
             self.ann = pd.read_csv(annotation_file)
         else:
@@ -171,7 +173,8 @@ class CASME2DatasetFA(Dataset):
         dx = right_eye[0] - left_eye[0]
         angle = np.degrees(np.arctan2(dy, dx))
 
-        eyes_center = tuple(((left_eye + right_eye) / 2).astype(int))
+        center = (left_eye + right_eye) / 2
+        eyes_center = (int(center[0]), int(center[1]))
 
         M = cv2.getRotationMatrix2D(eyes_center, angle, 1.0)
 
@@ -925,7 +928,7 @@ class SwOSMBTM(nn.Module):
 
         # Spatial Mamba (orthogonal scans)
         # Bidirectional temporal SSM
-        self.spacial = SwinMamba(in_ch=3, out_dim=512)
+        self.spatial = SwinMamba(in_ch=3, out_dim=512)
         #self.temporal = BidirectionalTemporalMamba(512) #TemporalMamba(512)
         self.temporal = build_temporal_module( 512, cfg.TEMPORAL_TYPE)
         self.classifier = nn.Linear(512, self.num_classes)
@@ -942,7 +945,7 @@ class SwOSMBTM(nn.Module):
             
         # Flatten temporal dimension
         x = x.reshape(B * T, C, H, W)
-        feats = self.spacial(x) # (B*T, 512)
+        feats = self.spatial(x) # (B*T, 512)
         feats = feats.reshape(B, T, -1)   # (B, T, 512)
         #feats = self.temporal(feats)       # Temporal MER modeling
         #---- Temporal ablation here ----
@@ -1172,7 +1175,7 @@ def main():
     #---------------
     # Load dataset and create splits
     #--------------
-    dataset = CASME2Dataset(
+    dataset = CASME2DatasetFA(
         root=cfg.DATA_ROOT,
         annotation_file=cfg.ANNOTATION_FILE,
         transform=mytransforms,
@@ -1188,7 +1191,7 @@ def main():
     # Handle class imbalance with weighted loss - higher weight to minority classes
     #-------------
     labels = dataset.ann['Estimated Emotion'].str.lower().map(dataset.label_map).values 
-    class_counts = torch.bincount(torch.tensor(labels), minlength=7)
+    class_counts = torch.bincount(torch.tensor(labels), minlength=cfg.NUM_CLASSES)
 
     weights = 1.0 / (class_counts.float() + 1e-6)
     weights = weights / weights.sum() * len(class_counts)
@@ -1206,12 +1209,18 @@ def main():
     #-------------------
     # Create DataLoaders reproducible in the same order with fixed seed and shuffle for training
     #-------------
-    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=4,
-    pin_memory=True) # num_workers=0 for debugging otherwissen2nfor GPU
-    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=4,
-    pin_memory=True)
-    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=4,
-    pin_memory=True)
+    pin_memory=True if use_gpu else False
+    if use_gpu:
+        num_workers = 4 # adjust based on your CPU cores and debugging needs
+    else:
+        num_workers = 0 # for CPU or debugging 
+
+    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=num_workers,
+    pin_memory=pin_memory) # num_workers=0 for debugging otherwissen2nfor GPU
+    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=num_workers,
+    pin_memory=pin_memory)
+    test_loader = DataLoader(test_set, batch_size=cfg.BATCH_SIZE, shuffle=False,    num_workers=num_workers,
+    pin_memory=pin_memory)
     
     #-------------
     # model and training components
@@ -1221,7 +1230,7 @@ def main():
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
     optimizer = torch.optim.Adam([
-        {"params": model.backbone.parameters(), "lr": cfg.BKBONE_LR},
+        {"params": model.spatial.parameters(), "lr": cfg.BKBONE_LR},
         {"params": model.temporal.parameters(), "lr": cfg.TEMP_LR},
     ])
     
