@@ -1207,7 +1207,7 @@ def main():
     print("Model and components initialized.")
 
     #-------------------------------
-    #
+    # Quick test run to verify dimensions and checkpoint loading before full training
     #-----------------------------
 
     best_val_acc = 0.0
@@ -1266,7 +1266,7 @@ def main():
             batch_acc = (preds == y).float().mean()
 
             #------------------------
-            # accumulate for epoch
+            # Train accumulate for epoch
             #-------------------
             train_correct += (preds == y).sum().item()
             train_total += y.size(0)
@@ -1293,6 +1293,9 @@ def main():
                 logits = model(x)
                 loss = criterion(logits, y)
 
+                #------------------------
+                # Validation accumulate for epoch
+                #-------------------
                 val_loss += loss.item()
                 preds = logits.argmax(dim=1)
                 val_correct += (preds == y).sum().item()
@@ -1308,10 +1311,10 @@ def main():
         print(f"Epoch {epoch:02d} | "
           f"Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | "
           f"Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%"
-)
+        )
         log.append([epoch, train_loss, train_acc, val_loss, val_acc])
       
-        scheduler.step() # update learning rate according to schedule
+
 
         #-----------    
         # freeze the best model
@@ -1330,23 +1333,30 @@ def main():
             exp_dir,
             is_best=is_best
         )
-        # val accuracy not to overfit the model training acc → memorization, 
-        # validation acc → generalization, 
-        # test acc → final report
+
+        #------------
+        # Next Epoch Learning Rate Update
+        #----------------
+        scheduler.step() # update learning rate according to sched
 
     print("Training & Validation step OK")
 
     save_training_log(log, epoch, train_loss, val_loss, train_acc, val_acc, exp_dir)
 
+    # val accuracy not to overfit the model training acc → memorization, 
+    # validation acc → generalization, 
+    # test acc → final report
+
     #=======================================
     # TEST EVALUATION
     #=========================================
     
+    #------------------------------
     # reload the best model from experiment directory
+    #------------------------------
     best_model_path = os.path.join(exp_dir, "best_model.pth")
     load_checkpoint_with_migration(model, best_model_path, device)
     model.eval()
-
 
     test_correct, test_total = 0, 0
     all_preds = []
@@ -1357,6 +1367,9 @@ def main():
             x, y = x.to(device), y.to(device)
             logits = model(x)
 
+            #------------------------
+            # Test accumulate for final evaluation
+            #-------------------
             preds = logits.argmax(dim=1)
             test_correct += (preds == y).sum().item()
             test_total += y.size(0)
@@ -1370,7 +1383,7 @@ def main():
     print(f"[TEST] Final Test Accuracy: {test_acc:.2f}%")
 
     #------------------------------
-    # - Save evaluation results ----------
+    # - Save evaluation results
     #---------------
     report = classification_report(
         all_gt, all_preds,
