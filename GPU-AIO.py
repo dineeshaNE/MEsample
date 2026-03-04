@@ -117,26 +117,45 @@ import numpy as np
 class CASME2DatasetFA(Dataset):
     def __init__(self, root, annotation_file, transform=None, T=32, limit=None):
         self.root = root
-        #self.ann = pd.read_excel(annotation_file)
+        self.ann = pd.read_csv(annotation_file)
         self.transform = transform
         self.T = T
 
-         
-        self.fa = face_alignment.FaceAlignment(
-            face_alignment.LandmarksType.TWO_D,
-            device='cuda' if torch.cuda.is_available() else 'cpu'
-        )
-        #If memory becomes tight, change to: device='cpu' Face alignment can stay on CPU to save GPU VRAM.
-
-        # Directory to store alignment matrices
+         # Directory to store alignment matrices
         self.cache_dir = os.path.join(self.root, "alignment_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
 
+         # Check if cache already exists for ALL clips---------
+        self.use_alignment = True
+        all_cached = True
+        for _, row in self.ann.iterrows():
+            subject = row['Subject']
+            video = row['Filename']
+            if not os.path.exists(self.get_cache_path(subject, video)):
+                all_cached = False
+                break
+
+        if not all_cached:
+            print("Initializing face alignment model...")
+            self.fa = face_alignment.FaceAlignment(
+                face_alignment.LandmarksType.TWO_D,
+                device='cuda' if torch.cuda.is_available() else 'cpu'
+            )
+        else:
+            print("All alignment cache found. Skipping face_alignment model.")
+            self.fa = None
+
+        '''self.fa = face_alignment.FaceAlignment(
+            face_alignment.LandmarksType.TWO_D,
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )'''
+        #If memory becomes tight, change to: device='cpu' Face alignment can stay on CPU to save GPU VRAM.
+
                 
-        if annotation_file.endswith(".csv"):
+        '''if annotation_file.endswith(".csv"):
             self.ann = pd.read_csv(annotation_file)
         else:
-            raise ValueError("Annotation file must be .csv")
+            raise ValueError("Annotation file must be .csv")'''
 
         #print(self.ann.columns)
 
@@ -222,9 +241,18 @@ class CASME2DatasetFA(Dataset):
             if i == 0 and M is None:
                 M = self.compute_alignment_matrix(img)
 
+                if i == 0 and M is None:
+                    if self.fa is not None:
+                        M = self.compute_alignment_matrix(img)
+                    else:
+                        M = np.eye(2, 3, dtype=np.float32)
+
                 if M is None:
                     # Fallback (identity transform)
                     M = np.eye(2, 3, dtype=np.float32)
+                    '''if M is None:
+                    # Fallback (identity transform)
+                    M = np.eye(2, 3, dtype=np.float32)'''
 
                 # 💾 Save permanently
                 np.save(cache_path, M)
@@ -686,6 +714,8 @@ class TemporalSelectiveTrueMamba(nn.Module):
             groups=d_model  # depthwise
         )
 
+
+
         # Diagonal state matrix A (learned, stabilized)
         #self.A = nn.Parameter(torch.randn(d_model))
         # Stable diagonal A parameterization
@@ -695,6 +725,8 @@ class TemporalSelectiveTrueMamba(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
 
         self.dropout = nn.Dropout(dropout)
+        # Learnable global timestep (small initial value)
+        self.dt = nn.Parameter(torch.tensor(0.1))
 
         #self.norm = nn.LayerNorm(d_model)
 
@@ -709,6 +741,7 @@ class TemporalSelectiveTrueMamba(nn.Module):
 
         # Local temporal mixing (Conv1D expects B, C, T)
         x_conv = self.dwconv(x.transpose(1, 2)).transpose(1, 2)
+        x = x + x_conv  # Residual connection for local mixing
 
         # Generate selective parameters
         proj = self.in_proj(x)
@@ -736,9 +769,6 @@ class TemporalSelectiveTrueMamba(nn.Module):
         s = torch.zeros(B, D, device=x.device)
         outputs = []
 
-
-
-
         for t in range(T):
             dt_t = dt[:, t]
             Bx_t = Bx[:, t]
@@ -750,8 +780,12 @@ class TemporalSelectiveTrueMamba(nn.Module):
             #s = A_bar * s + Bx_t
             #y = Cx_t * s
 
-            A_bar = torch.exp(dt_t * A)
-            s = A_bar * s + Bx_t
+
+            # Stable Euler update
+            ds = A * s + Bx_t
+            s = s + self.dt * dt_t * ds     
+            #A_bar = torch.exp(dt_t * A)
+            #s = A_bar * s + Bx_t    
             y = gate_t * s
 
             outputs.append(y)
@@ -1195,6 +1229,8 @@ def main():
 
     weights = 1.0 / (class_counts.float() + 1e-6)
     weights = weights / weights.sum() * len(class_counts)
+    if (weights> 10).any():
+      weights = torch.clamp(weights, max=5.0)
 
     #---------------
     # # ensure reproducible splits
@@ -1209,11 +1245,9 @@ def main():
     #-------------------
     # Create DataLoaders reproducible in the same order with fixed seed and shuffle for training
     #-------------
-    pin_memory=True if use_gpu else False
-    if use_gpu:
-        num_workers = 4 # adjust based on your CPU cores and debugging needs
-    else:
-        num_workers = 0 # for CPU or debugging 
+    pin_memory = torch.cuda.is_available()
+    if pin_memory:
+        num_workers=2
 
     train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=num_workers,
     pin_memory=pin_memory) # num_workers=0 for debugging otherwissen2nfor GPU
@@ -1297,9 +1331,17 @@ def main():
 
             optimizer.zero_grad()
 
-            with autocast("cuda"):
-                logits = model(x)
-                loss = criterion(logits, y)
+            #with autocast("cuda"):
+            logits = model(x)
+            loss = criterion(logits, y)
+            
+            # *Nan Debug checks for performance
+            if torch.isnan(loss):
+              print("NaN detected in loss!")
+              break
+            if torch.isnan(logits).any():
+              print("NaN detected in logits!")
+              break
 
             scaler.scale(loss).backward()
 
