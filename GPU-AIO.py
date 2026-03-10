@@ -45,7 +45,7 @@ class Config:
         # Training
 
         self.LR = 1e-3
-        self.EPOCHS = 2
+        self.EPOCHS = 10
         self.TRAIN_SPLIT = 0.7
         self.VAL_SPLIT = 0.15
         self.TEST_SPLIT = 0.15
@@ -525,7 +525,56 @@ class OrthogonalSpatialMamba(nn.Module):
     # -------------------------------
     # Window Orthogonal Mamba
     # -------------------------------
-    
+import torch
+import torch.nn as nn
+
+class WindowOrthogonalMambaHV(nn.Module):
+
+    def __init__(self, dim, window_size):
+        super().__init__()
+
+        self.ws = window_size
+
+        self.ssm_h = Mamba(d_model=dim)
+        self.ssm_v = Mamba(d_model=dim)
+
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, w):
+        """
+        w: (Bwin, ws*ws, C)
+        """
+
+        B, L, C = w.shape
+        ws = self.ws
+
+        # reshape window
+        w = w.reshape(B, ws, ws, C)
+
+        # -------- horizontal scan --------
+        s1 = w.reshape(B, L, C)
+        y1 = self.ssm_h(s1)
+
+        # reverse horizontal
+        s2 = torch.flip(s1, dims=[1])
+        y2 = torch.flip(self.ssm_h(s2), dims=[1])
+
+        # -------- vertical scan --------
+        v = w.permute(0,2,1,3)  # swap H,W
+        s3 = v.reshape(B, L, C)
+        y3 = self.ssm_v(s3)
+
+        # reverse vertical
+        s4 = torch.flip(s3, dims=[1])
+        y4 = torch.flip(self.ssm_v(s4), dims=[1])
+
+        # merge
+        y = (y1 + y2 + y3 + y4) / 4
+
+        y = self.norm(y)
+
+        return y.reshape(B, L, C)
+
 class WindowOrthogonalMamba(nn.Module):
     def __init__(self, dim, window_size):
         super().__init__()
@@ -560,7 +609,7 @@ class WindowOrthogonalMamba(nn.Module):
 def build_spatial_module(dim, window_size, spatial_type):
 
     if spatial_type == "window_mamba":
-        return WindowOrthogonalMamba(dim, window_size)
+        return WindowOrthogonalMambaHV(dim, window_size)
 
     elif spatial_type == "single_mamba":
         return Mamba(dim)
