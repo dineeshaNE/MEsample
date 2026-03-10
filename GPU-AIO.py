@@ -43,6 +43,7 @@ class Config:
         self.BATCH_SIZE = 4
 
         # Training
+
         self.LR = 1e-3
         self.EPOCHS = 2
         self.TRAIN_SPLIT = 0.7
@@ -151,11 +152,6 @@ class CASME2DatasetFA(Dataset):
         )'''
         #If memory becomes tight, change to: device='cpu' Face alignment can stay on CPU to save GPU VRAM.
 
-                
-        '''if annotation_file.endswith(".csv"):
-            self.ann = pd.read_csv(annotation_file)
-        else:
-            raise ValueError("Annotation file must be .csv")'''
 
         #print(self.ann.columns)
 
@@ -401,20 +397,8 @@ class CASME2Dataset(Dataset):
 # -------------------------------
 # Mamba instead in ssm_mamba
 # -------------------------------
+
 class Mamba(nn.Module):
-    """
-    Real State Space Model (causal, recurrent)
-
-    Discrete-time State Space Model:
-        h_t = A h_{t-1} + B x_t
-        y_t = C h_t + D x_t
-
-        True diagonal SSM
-        Linear time in sequence length
-        Stable & parallelizable
-        Exactly how Mamba works internally
-        complexity O(TD)
-    """
 
     def __init__(self, d_model, use_nonlinearity=True):
         super().__init__()
@@ -422,13 +406,14 @@ class Mamba(nn.Module):
 
 
         # Diagonal SSM parameters
-        self.A = nn.Parameter(torch.randn(d_model))
-        A = torch.tanh(self.A)
-        self.B = nn.Parameter(torch.randn(d_model))
-        self.C = nn.Parameter(torch.randn(d_model))
+        #self.A = nn.Parameter(torch.randn(d_model)* 0.01)
+        self.A_log = nn.Parameter(torch.randn(d_model) * 0.01)
+        #A = torch.tanh(self.A)
+        #A = -torch.exp(self.A)
+        self.B = nn.Parameter(torch.randn(d_model)* 0.01)
+        self.C = nn.Parameter(torch.randn(d_model)* 0.01)
         self.D = nn.Parameter(torch.randn(d_model))
 
-        self.norm = nn.LayerNorm(d_model)
         self.use_nonlinearity = use_nonlinearity
         self.act = nn.GELU() if use_nonlinearity else nn.Identity() # not to limit for complex ME patterns
         #print("Initialized SimpleSSM",d_model)
@@ -436,19 +421,32 @@ class Mamba(nn.Module):
 
     def forward(self, x):
         #        x: (batch, seq_len, d_model)
-
         B, T, D = x.shape
+        # Stable A
+        A = -torch.exp(torch.clamp(self.A_log, -5, 5))
         s = torch.zeros(B, D, device=x.device)
         outputs = []
 
         for t in range(T):
             xt = x[:, t, :]
+            # ---------------------------
+            # Input debug
+            # ---------------------------
+            if torch.isnan(x).any():
+                print("NaN detected in input x")
 
             # STATE UPDATE (this is the missing part before)
-            s = self.A * s + self.B * xt
+            s = A * s + self.B * xt
+            s = torch.tanh(s)
+            if torch.isnan(s).any():
+                print("NaN after s")
+            # Stabilize state
+            s = torch.tanh(s)
 
             # OUTPUT
             yt = self.C * s + self.D * xt
+            if torch.isnan(yt).any():
+                print("NaN after yt")
             outputs.append(yt)
             #print(f"SSM timestep {t}, output shape: {yt.shape}",outputs.__len__)
 
@@ -460,7 +458,38 @@ class Mamba(nn.Module):
 #-------------------------------
 # OrthogonalSpatial Mamba Modules
 #-------------------------------
+class OrthogonalSpatialMambaHV(nn.Module):
 
+    def __init__(self, d_model):
+        super().__init__()
+
+        self.mamba_h = Mamba(d_model)
+        self.mamba_v = Mamba(d_model)
+
+        self.proj = nn.Linear(d_model*2, d_model)
+
+    def forward(self, x):
+        # x: (B,H,W,C)
+
+        B,H,W,C = x.shape
+
+        # horizontal sequence
+        h_seq = x.reshape(B, H*W, C)
+
+        # vertical sequence
+        v_seq = x.permute(0,2,1,3).reshape(B, H*W, C)
+
+        h_out = self.mamba_h(h_seq)
+        v_out = self.mamba_v(v_seq)
+
+        v_out = v_out.reshape(B,W,H,C).permute(0,2,1,3).reshape(B,H*W,C)
+
+        out = torch.cat([h_out, v_out], dim=-1)
+
+        out = self.proj(out)
+
+        return out.reshape(B,H,W,C)
+    
 class OrthogonalSpatialMamba(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -700,7 +729,8 @@ class TemporalSelectiveTrueMamba(nn.Module):
         self.d_model = d_model
 
         # Pre-norm (standard Mamba style)
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = nn.LayerNorm(self.d_model, eps=1e-4)
+        #   self.norm = nn.LayerNorm(d_model)
 
         # Input-dependent projections (Selective SSM)
         self.in_proj = nn.Linear(d_model, 3 * d_model)
@@ -721,6 +751,9 @@ class TemporalSelectiveTrueMamba(nn.Module):
         # Stable diagonal A parameterization
         self.A_log = nn.Parameter(torch.randn(d_model))
 
+        # Residual skip scaling
+        self.D = nn.Parameter(torch.ones(d_model))
+
         # Output projection
         self.out_proj = nn.Linear(d_model, d_model)
 
@@ -737,14 +770,46 @@ class TemporalSelectiveTrueMamba(nn.Module):
         B, T, D = x.shape
         assert D == self.d_model
 
-        x = self.norm(x)
+        # ---------------------------
+        # Input debug
+        # ---------------------------
+        if torch.isnan(x).any():
+            print("NaN detected in input x")
+            x = torch.nan_to_num(x)
+
+        # ---------------------------
+        # Local temporal mixing
+        # ---------------------------
+
+        '''print("x before conv NaN:", torch.isnan(x).any())
+        print("x before conv Inf:", torch.isinf(x).any())
+        print("x before conv min:", x.min().item())
+        print("x before conv max:", x.max().item())'''
 
         # Local temporal mixing (Conv1D expects B, C, T)
         x_conv = self.dwconv(x.transpose(1, 2)).transpose(1, 2)
-        x = x + x_conv  # Residual connection for local mixing
+        if torch.isnan(x_conv).any():
+            print("NaN after depthwise conv")
+        
+        x = self.norm(x + 0.1 * x_conv)
+        if torch.isnan(x).any():
+            print("NaN after LayerNorm")
+            x = torch.nan_to_num(x)
 
-        # Generate selective parameters
+        '''print("conv weight min:", self.dwconv.weight.min())
+        print("conv weight max:", self.dwconv.weight.max())
+        print("conv output min:", x_conv.min().item())
+        print("conv output max:", x_conv.max().item())'''
+
+        x = x + 0.1 * x_conv  # Residual connection for local mixing
+
+        # ---------------------------
+        # Selective parameter generation
+        # ---------------------------
         proj = self.in_proj(x)
+        if torch.isnan(proj).any():
+            print("NaN after in_proj")
+
         dt, Bx, Cx = proj.chunk(3, dim=-1)
 
         # Stabilize dynamics
@@ -757,7 +822,8 @@ class TemporalSelectiveTrueMamba(nn.Module):
 
         # stabilize A with different strategies for ablation
         if cfg.A_STABILITY == "exp":
-            A = -torch.exp(self.A_log)# better stability
+            # A = -torch.exp(self.A_log)# better stability
+            A = -torch.exp(torch.clamp(self.A_log, -5, 5)) #**
 
         elif cfg.A_STABILITY == "abs":
             A = torch.abs(self.A_log)# ensure stability
@@ -783,17 +849,29 @@ class TemporalSelectiveTrueMamba(nn.Module):
 
             # Stable Euler update
             ds = A * s + Bx_t
-            s = s + self.dt * dt_t * ds     
+            s = s + self.dt * dt_t * ds   
+            if torch.isnan(s).any():
+                print("NaN after s")
+
+            s = torch.tanh(s )
+            if torch.isnan(s).any():
+                print("NaN detected in state")
+            #s = torch.clamp(s, -10, 10)  # for better stability
             #A_bar = torch.exp(dt_t * A)
             #s = A_bar * s + Bx_t    
-            y = gate_t * s
+            #y = gate_t * s
+
+            y = gate_t * s + self.D * x[:, t]
 
             outputs.append(y)
 
         y = torch.stack(outputs, dim=1)
 
         y = self.out_proj(y)
-        y = self.dropout(y)      
+        if torch.isnan(y).any():
+            print("NaN after output projection")
+        y = self.dropout(y)    
+        #print(f"SSM output shape:{x} {y}")
 
         #return self.out_proj(y)
         return x + y
@@ -1248,6 +1326,8 @@ def main():
     pin_memory = torch.cuda.is_available()
     if pin_memory:
         num_workers=2
+    else:
+        num_workers=0
 
     train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True,    num_workers=num_workers,
     pin_memory=pin_memory) # num_workers=0 for debugging otherwissen2nfor GPU
@@ -1308,8 +1388,13 @@ def main():
     start= time.time()
     
 
-    from torch.amp import autocast, GradScaler
-    scaler = GradScaler("cuda")
+    '''    from torch.amp import autocast, GradScaler
+
+    if torch.cuda.is_available():
+        #scaler = torch.cuda.amp.GradScaler()
+        scaler = GradScaler("cuda")
+    else:
+        scaler = None'''
 
     #=====================================================================
     # training loop
@@ -1328,45 +1413,43 @@ def main():
         for x, y in train_loader:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-
+            print("Input range:", x.min().item(), x.max().item())
+            print("Any NaN in input:", torch.isnan(x).any())
             optimizer.zero_grad()
-
-            #with autocast("cuda"):
-            logits = model(x)
-            loss = criterion(logits, y)
-            
-            # *Nan Debug checks for performance
-            if torch.isnan(loss):
-              print("NaN detected in loss!")
-              break
-            if torch.isnan(logits).any():
-              print("NaN detected in logits!")
-              break
-
-            scaler.scale(loss).backward()
-
-            # ✅ Unscale before clipping
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-            scaler.step(optimizer)
-            scaler.update()
-
-            # before UDA issue
-            '''         
-            for x, y in train_loader:
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
 
             #-------------------
             # Forward pass, loss, backward, optimize
             #-------------------
+            #with autocast("cuda"):
+            '''if scaler:
+                with torch.cuda.amp.autocast():
+                    logits = model(x)
+                    loss = criterion(logits, y)
+                    
+                # *Nan Debug checks for performance
+                if torch.isnan(loss):
+                    print("NaN detected in loss!")
+                    break
+                if torch.isnan(logits).any():
+                    print("NaN detected in logits!")
+                    break
+
+                scaler.scale(loss).backward()
+
+                # ✅ Unscale before clipping
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+                scaler.step(optimizer)
+                scaler.update()
+            else:'''
             logits = model(x)
             loss = criterion(logits, y)
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # avoid exploding gradients
-            optimizer.step()'''
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # avoid exploding gradients
+            optimizer.step()
+
 
             # inside batch loop (optional for debugging)
             preds = logits.argmax(dim=1)
@@ -1383,7 +1466,11 @@ def main():
             print(f"Batch Loss: {loss.item():.4f} | Acc: {batch_acc:.2%}")
 
         train_acc = 100 * train_correct / train_total
-        train_loss /= len(train_loader)
+        #train_loss /= len(train_loader)
+        if len(train_loader) > 0:
+            train_loss /= len(train_loader)
+        else:
+            train_loss = 0
     
         Tend = time.time()-start
         print("Traing Time:", Tend)
